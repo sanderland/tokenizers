@@ -85,6 +85,12 @@ const ENCODES: &[(&str, &str, &str, &[u32])] = &[
 const UNIGRAM: &[(&str, &str, &str, &[u32])] = &[
     ("model", r#"{"type": "Unigram", "unk_id": 0, "byte_fallback": false,
         "vocab": [["<unk>", 0.0], ["a", -1.0], ["ab", -0.5]]}"#, "ab", &[2]),
+    // `a`+`b` outscores `ab`, so the default objective splits and `min_tokens` takes it whole.
+    // The first row also pins the default: a file from before the field reads as `max_score`.
+    ("model", r#"{"type": "Unigram", "unk_id": 0, "byte_fallback": false,
+        "vocab": [["<unk>", 0.0], ["a", -0.1], ["b", -0.1], ["ab", -10.0]]}"#, "ab", &[1, 2]),
+    ("model", r#"{"type": "Unigram", "unk_id": 0, "byte_fallback": false, "objective": "min_tokens",
+        "vocab": [["<unk>", 0.0], ["a", -0.1], ["b", -0.1], ["ab", -10.0]]}"#, "ab", &[3]),
 ];
 #[cfg(not(feature = "unigram"))]
 const UNIGRAM: &[(&str, &str, &str, &[u32])] = &[];
@@ -150,6 +156,8 @@ const REFUSED: &[(&str, &str, &str)] = &[
 #[rustfmt::skip]
 const REFUSED_UNIGRAM: &[(&str, &str, &str)] = &[
     ("model", r#"{"type": "Unigram", "vocab": [["a"]]}"#, "[token, score] pair"),
+    ("model", r#"{"type": "Unigram", "unk_id": 0, "byte_fallback": false, "objective": "fewest",
+        "vocab": [["<unk>", 0.0]]}"#, "unknown Unigram objective"),
 ];
 #[cfg(not(feature = "unigram"))]
 const REFUSED_UNIGRAM: &[(&str, &str, &str)] = &[];

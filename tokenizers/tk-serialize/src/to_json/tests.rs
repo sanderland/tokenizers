@@ -379,6 +379,26 @@ fn a_unigram_model_keeps_its_scores_and_unk() {
     assert_eq!(vocab[0][1].to_string(), "0.0");
 }
 
+/// The writer always spells the objective out, and a file from before the
+/// field existed reads as `max_score`, so the rewrite gains the field.
+#[cfg(feature = "unigram")]
+#[test]
+fn a_unigram_model_writes_its_objective() {
+    let model = written(
+        "model",
+        r#"{"type": "Unigram", "unk_id": 0, "byte_fallback": false, "objective": "min_tokens",
+            "vocab": [["<unk>", 0.0], ["a", -1.0]]}"#,
+    );
+    assert_eq!(model["objective"], "min_tokens");
+
+    let legacy = written(
+        "model",
+        r#"{"type": "Unigram", "unk_id": 0, "byte_fallback": false,
+            "vocab": [["<unk>", 0.0], ["a", -1.0]]}"#,
+    );
+    assert_eq!(legacy["objective"], "max_score");
+}
+
 /// Cheap, and it catches an unescaped control character that `hifijson` happens to tolerate: the
 /// input spells them as JSON escapes, and the writer has to escape them again on the way out.
 #[test]

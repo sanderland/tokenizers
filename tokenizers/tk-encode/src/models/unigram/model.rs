@@ -17,6 +17,27 @@ use std::convert::TryInto;
 
 pub(crate) type Vocab = Vec<(String, f64)>;
 
+/// Segmentation objective: which lattice path `Unigram` encodes.
+/// `MaxScore` is the classic maximum-log-prob path; `MinTokens` takes the
+/// fewest-token path and uses the score only as a tiebreak.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Objective {
+    #[default]
+    MaxScore,
+    MinTokens,
+}
+
+impl Objective {
+    /// The `tokenizer.json` spelling. `tk-serialize` reads it back in
+    /// `read_unigram`; unknown spellings are an error there.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::MaxScore => "max_score",
+            Self::MinTokens => "min_tokens",
+        }
+    }
+}
+
 /// A `Unigram` model to encode sentences.
 pub struct Unigram {
     token_to_ids: BucketVocabStore,
@@ -31,6 +52,7 @@ pub struct Unigram {
     fuse_unk: bool,
     is_optimized: bool,
     byte_fallback: bool,
+    objective: Objective,
 
     pub alpha: Option<f64>,
     pub nbest_size: Option<usize>,
@@ -41,6 +63,7 @@ impl PartialEq for Unigram {
             && self.vocab == other.vocab
             && self.alpha == other.alpha
             && self.nbest_size == other.nbest_size
+            && self.objective == other.objective
     }
 }
 
@@ -61,6 +84,7 @@ impl Clone for Unigram {
             fuse_unk: self.fuse_unk,
             is_optimized: self.is_optimized,
             byte_fallback: self.byte_fallback,
+            objective: self.objective,
             alpha: self.alpha,
             nbest_size: self.nbest_size,
         }
@@ -152,6 +176,7 @@ impl Unigram {
             cache: Cache::default(),
             is_optimized,
             byte_fallback,
+            objective: Objective::default(),
             alpha: None,
             nbest_size: None,
         })
@@ -170,6 +195,24 @@ impl Unigram {
     pub fn byte_fallback(&self) -> bool {
         self.byte_fallback
     }
+
+    pub fn objective(&self) -> Objective {
+        self.objective
+    }
+
+    /// Switch the segmentation objective. Clears the encode cache, since
+    /// cached pieces were produced under the previous objective. The pipeline
+    /// cache needs no clearing: it lives in per-call scratch.
+    pub fn set_objective(&mut self, objective: Objective) {
+        self.objective = objective;
+        self.cache = self.cache.fresh();
+    }
+
+    pub fn with_objective(mut self, objective: Objective) -> Self {
+        self.set_objective(objective);
+        self
+    }
+
     pub fn len(&self) -> usize {
         self.vocab.len()
     }
@@ -263,7 +306,11 @@ impl Unigram {
     /// What `sentence` encodes to, worked out rather than looked up: the lattice's
     /// best path, or a draw from it when [`Unigram::samples`].
     fn encode_uncached(&self, sentence: &str) -> Result<Vec<String>> {
-        if self.is_optimized && !self.samples() {
+        // Sampling draws from the score lattice, so it keeps the score path
+        // regardless of the objective; the objective picks the best path only.
+        if !self.samples() && self.objective == Objective::MinTokens {
+            self.encode_min_tokens(sentence)
+        } else if self.is_optimized && !self.samples() {
             self.encode_optimized(sentence)
         } else {
             self.encode_unoptimized(sentence)
@@ -369,6 +416,38 @@ impl Unigram {
             (_, Some(alpha)) => lattice.sample(alpha),
             _ => lattice.viterbi(),
         };
+        if self.fuse_unk {
+            let mut results = vec![];
+            let mut token = String::new();
+            for node in path.iter() {
+                let item = lattice.piece(&node.borrow());
+                if node.borrow().id == self.unk_id.ok_or(UnigramError::MissingUnkId)? {
+                    token.push_str(&item);
+                } else {
+                    if !token.is_empty() {
+                        results.push(token);
+                        token = String::new();
+                    }
+                    results.push(item);
+                }
+            }
+            if !token.is_empty() {
+                results.push(token);
+            }
+            Ok(results)
+        } else {
+            let results: Vec<String> = path
+                .iter()
+                .map(|node| lattice.piece(&node.borrow()))
+                .collect();
+            Ok(results)
+        }
+    }
+
+    fn encode_min_tokens(&self, sentence: &str) -> Result<Vec<String>> {
+        let mut lattice = Lattice::from(sentence, self.bos_id, self.eos_id);
+        self.populate_nodes(&mut lattice);
+        let path = lattice.viterbi_min_tokens();
         if self.fuse_unk {
             let mut results = vec![];
             let mut token = String::new();

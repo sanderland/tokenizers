@@ -137,7 +137,18 @@ pub(super) fn read_unigram(cfg: &Json<'_>) -> Result<tk_encode::models::unigram:
         .field("byte_fallback")
         .and_then(Json::as_bool)
         .unwrap_or(false);
+    // Missing means a file written before the field existed, which is `max_score`.
+    let objective = match cfg.field("objective") {
+        None => tk_encode::models::unigram::Objective::MaxScore,
+        Some(v) => match v.as_str() {
+            Some("max_score") => tk_encode::models::unigram::Objective::MaxScore,
+            Some("min_tokens") => tk_encode::models::unigram::Objective::MinTokens,
+            Some(other) => return Err(format!("unknown Unigram objective {other:?}").into()),
+            None => return Err("Unigram `objective` is not a string".into()),
+        },
+    };
     tk_encode::models::unigram::Unigram::from(vocab, unk_id, byte_fallback)
+        .map(|model| model.with_objective(objective))
 }
 
 #[cfg(feature = "wordlevel")]

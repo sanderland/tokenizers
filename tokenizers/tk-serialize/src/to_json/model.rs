@@ -56,6 +56,7 @@ pub(super) fn write_model(out: &mut Out, model: &PipelineModel) -> Result<()> {
             }
             out.arr_close();
             out.field_bool("byte_fallback", unigram.byte_fallback());
+            out.field_str("objective", unigram.objective().as_str());
             out.obj_close();
         }
         #[cfg(feature = "wordpiece")]

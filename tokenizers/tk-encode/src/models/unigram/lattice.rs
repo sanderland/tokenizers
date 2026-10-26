@@ -223,12 +223,89 @@ impl<'a> Lattice<'a> {
         results
     }
 
+    /// Viterbi over the same lattice, minimizing the lexicographic
+    /// `(token_count, -score)` cost: the segmentation with the fewest tokens
+    /// wins, ties broken by highest total score, remaining ties by first
+    /// found. Backtrace state lives in side tables so the score-based
+    /// `viterbi`/`nbest`/`sample` paths are untouched.
+    pub fn viterbi_min_tokens(&mut self) -> Vec<NodeRef> {
+        let len = self.len;
+        let eos_id = self.begin_nodes[len][0].borrow().node_id;
+        // best[node_id] = (token count, total score) of the best path ending there.
+        let mut best: Vec<Option<(usize, f64)>> = vec![None; self.nodes.len()];
+        let mut prev: Vec<Option<NodeRef>> = vec![None; self.nodes.len()];
+        best[self.end_nodes[0][0].borrow().node_id] = Some((0, 0.0));
+
+        let mut pos = 0;
+        while pos <= len {
+            if self.begin_nodes[pos].is_empty() {
+                return vec![];
+            }
+            for rnode in &self.begin_nodes[pos] {
+                let rid = rnode.borrow().node_id;
+                let rscore = rnode.borrow().score;
+                let mut best_here: Option<(usize, f64)> = None;
+                let mut best_node: Option<NodeRef> = None;
+                for lnode in &self.end_nodes[pos] {
+                    if let Some((count, score)) = best[lnode.borrow().node_id] {
+                        // The eos node terminates the path; it is not a token.
+                        let count = if rid == eos_id { count } else { count + 1 };
+                        let candidate = (count, score + rscore);
+                        let better = match best_here {
+                            None => true,
+                            Some((best_count, best_score)) => {
+                                candidate.0 < best_count
+                                    || (candidate.0 == best_count && candidate.1 > best_score)
+                            }
+                        };
+                        if better {
+                            best_node = Some(lnode.clone());
+                            best_here = Some(candidate);
+                        }
+                    }
+                }
+                match (best_node, best_here) {
+                    (Some(bnode), Some(b)) => {
+                        prev[rid] = Some(bnode);
+                        best[rid] = Some(b);
+                    }
+                    _ => return vec![],
+                }
+            }
+            if let Some(c) = self.sentence[pos..].chars().next() {
+                pos += c.len_utf8();
+            } else {
+                break;
+            }
+        }
+
+        if prev[eos_id].is_none() {
+            return vec![];
+        }
+        let mut results: Vec<NodeRef> = vec![];
+        let mut node: NodeRef = prev[eos_id].as_ref().unwrap().clone();
+        while prev[node.borrow().node_id].is_some() {
+            results.push(node.clone());
+            let nid = node.borrow().node_id;
+            node = prev[nid].as_ref().unwrap().clone();
+        }
+        results.reverse();
+        results
+    }
+
     pub fn piece(&self, node: &Node) -> String {
         self.sentence[node.pos..node.pos + node.length].to_owned()
     }
 
     pub fn tokens(&mut self) -> Vec<String> {
         self.viterbi()
+            .iter()
+            .map(|node| self.piece(&node.borrow()))
+            .collect()
+    }
+
+    pub fn tokens_min_tokens(&mut self) -> Vec<String> {
+        self.viterbi_min_tokens()
             .iter()
             .map(|node| self.piece(&node.borrow()))
             .collect()
