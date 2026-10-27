@@ -268,6 +268,37 @@ impl MinGramTrainer {
             .collect()
     }
 
+    /// Re-estimate MLE log-probs for a fixed piece list by hard EM: segment
+    /// the sentences on min-token paths and normalize the counts. Nothing is
+    /// pruned, so the output aligns with the input pieces; unseen pieces floor
+    /// at 0.5, below any seen count, which keeps their scores finite (the
+    /// `tokenizer.json` writer rejects non-finite scores) and losing every tie.
+    pub fn em_scores(
+        &self,
+        pieces: &[String],
+        sentences: &[(String, u32)],
+    ) -> Result<Vec<(String, f64)>> {
+        let mut model_pieces: Vec<SentencePiece> = std::iter::once(("<UNK>".into(), f64::NAN))
+            .chain(pieces.iter().map(|piece| (piece.clone(), 0.0)))
+            .collect();
+        let mut new_model = Unigram::from(model_pieces.clone(), Some(0), false)?;
+        for _ in 0..self.n_sub_iterations {
+            let (_, expected) = self.run_e_step(&new_model, sentences);
+            let total: f64 = expected[1..].iter().map(|count| count.max(0.5)).sum();
+            let logsum = total.ln();
+            model_pieces = std::iter::once(("<UNK>".into(), f64::NAN))
+                .chain(
+                    pieces
+                        .iter()
+                        .zip(&expected[1..])
+                        .map(|(piece, count)| (piece.clone(), count.max(0.5).ln() - logsum)),
+                )
+                .collect();
+            new_model = Unigram::from(model_pieces.clone(), Some(0), false)?;
+        }
+        Ok(model_pieces.into_iter().skip(1).collect())
+    }
+
     pub fn do_train(
         &self,
         sentences: Vec<Sentence>,
@@ -495,6 +526,33 @@ mod tests {
 
         assert_eq!(model.objective(), Objective::MinTokens);
         assert!(model.get_vocab_size() <= 20);
+    }
+
+    #[test]
+    fn test_em_scores_keep_vocab_and_estimate_mle() {
+        let trainer = MinGramTrainer::builder()
+            .n_sub_iterations(3)
+            .build()
+            .unwrap();
+        let pieces = ["a", "b", "ab"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let sentences = vec![("ab".to_string(), 3), ("a".to_string(), 1)];
+
+        let scored = trainer.em_scores(&pieces, &sentences).unwrap();
+
+        // Nothing pruned: output aligns with input.
+        assert_eq!(
+            scored.iter().map(|(p, _)| p).collect::<Vec<_>>(),
+            ["a", "b", "ab"]
+        );
+        // Min-count paths use "ab" x3 and "a" x1; "b" is unseen (floor 0.5).
+        let total = 1.0 + 0.5 + 3.0;
+        assert_approx_eq!(scored[0].1, (1.0_f64 / total).ln(), 1e-9);
+        assert_approx_eq!(scored[1].1, (0.5_f64 / total).ln(), 1e-9);
+        assert_approx_eq!(scored[2].1, (3.0_f64 / total).ln(), 1e-9);
+        assert!(scored.iter().all(|(_, s)| s.is_finite()));
     }
 
     #[test]
