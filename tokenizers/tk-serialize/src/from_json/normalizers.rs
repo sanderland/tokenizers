@@ -18,7 +18,7 @@ use tk_encode::tokenizer::Result;
 #[cfg(feature = "normalizers")]
 use tk_encode::normalizers::{
     bert::BertNormalizer,
-    claude::Claude,
+    mark_boundaries::MarkBoundaries,
     precompiled::PrecompiledNormalizer,
     strip_accents::StripAccents,
     unicode::{NFC, NFD, NFKC, NFKD, Nmt},
@@ -78,14 +78,14 @@ fn push_normalizer(cfg: &Json<'_>, out: &mut Vec<PipelineNormalizer>) -> Result<
         "Lowercase" => out.push(PipelineNormalizer::Lowercase(Lowercase)),
         "ByteLevel" => out.push(PipelineNormalizer::ByteLevel(ByteLevelNormalizer)),
         #[cfg(feature = "normalizers")]
-        "Claude" => {
+        "MarkBoundaries" => {
             let allcaps_min = cfg
                 .get("allcaps_min")
                 .ok_or_else(|| -> tk_encode::Error {
-                    "Claude has no `allcaps_min` (spell it `null` to disable)".into()
+                    "MarkBoundaries has no `allcaps_min` (spell it `null` to disable)".into()
                 })?
                 .as_usize();
-            out.push(PipelineNormalizer::Claude(Claude::new(
+            out.push(PipelineNormalizer::MarkBoundaries(MarkBoundaries::new(
                 cfg.need(&owner, "fold_quotes", Json::as_bool)?,
                 allcaps_min,
                 cfg.need(&owner, "frame_bow", Json::as_bool)?,
@@ -140,7 +140,7 @@ fn push_normalizer(cfg: &Json<'_>, out: &mut Vec<PipelineNormalizer>) -> Result<
         }
         #[cfg(not(feature = "normalizers"))]
         "BertNormalizer" | "StripAccents" | "NFC" | "NFD" | "NFKC" | "NFKD" | "Nmt"
-        | "Precompiled" | "Claude" => {
+        | "Precompiled" | "MarkBoundaries" => {
             return Err(needs_feature(
                 &format!("the `{kind}` normalizer"),
                 "normalizers",

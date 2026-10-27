@@ -261,8 +261,8 @@ const BERT: &[(&str, &str)] = &[];
 #[cfg(feature = "normalizers")]
 #[rustfmt::skip]
 const CLAUDE: &[(&str, &str)] = &[
-    ("normalizer", r#"{"type": "Claude", "fold_quotes": true, "allcaps_min": 4, "frame_bow": true, "marks_part_of_words": false}"#),
-    ("normalizer", r#"{"type": "Claude", "fold_quotes": false, "allcaps_min": null, "frame_bow": true, "marks_part_of_words": true}"#),
+    ("normalizer", r#"{"type": "MarkBoundaries", "fold_quotes": true, "allcaps_min": 4, "frame_bow": true, "marks_part_of_words": false}"#),
+    ("normalizer", r#"{"type": "MarkBoundaries", "fold_quotes": false, "allcaps_min": null, "frame_bow": true, "marks_part_of_words": true}"#),
 ];
 #[cfg(not(feature = "normalizers"))]
 const CLAUDE: &[(&str, &str)] = &[];

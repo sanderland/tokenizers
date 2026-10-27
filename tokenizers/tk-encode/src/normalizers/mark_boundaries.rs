@@ -1,4 +1,4 @@
-//! Claude-style boundary normalizer: text -> ctok's marked stream.
+//! Boundary-marking normalizer: text -> the marked stream.
 //!
 //! // EXISTING CODE (pre-hackathon): ported from ctok/ctok/normalize.py and
 //! // ctok/ctok/constants.py. Message framing is intentionally excluded:
@@ -538,16 +538,18 @@ fn apply_seam_law(marked: &str) -> String {
     out
 }
 
-/// Claude-style boundary normalizer: rewrites text to ctok's marked stream
+/// Boundary-marking normalizer: rewrites text to the marked stream
 /// (word boundaries, case and absorbed spaces as markers). The model then
-/// tiles the marked stream whole.
+/// tiles the marked stream whole. The rules below are ctok's, measured on
+/// Claude tokenizers (see `docs/claude_boundaries.md` in the workspace).
 ///
-/// Options select the ctok family boundary rules. The default is the fixed
+/// Options select the boundary rules. The default is the fixed
 /// configuration: v3 rules with the mark-splitting bug repaired.
-/// `v3`, `v47` and `v48` reproduce ctok's families exactly, bug included.
+/// `v3`, `v47` and `v48` reproduce ctok's measured Claude families exactly,
+/// bug included.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct Claude {
+pub struct MarkBoundaries {
     /// Fold curly quotes to ASCII (v3 only).
     pub fold_quotes: bool,
     /// All-caps spans of at least this length take ⟨caps⟩; None disables.
@@ -563,7 +565,7 @@ pub struct Claude {
     pub marks_part_of_words: bool,
 }
 
-impl Default for Claude {
+impl Default for MarkBoundaries {
     /// v3 boundary rules with the mark-splitting bug repaired.
     fn default() -> Self {
         Self {
@@ -575,7 +577,7 @@ impl Default for Claude {
     }
 }
 
-impl Claude {
+impl MarkBoundaries {
     pub fn new(
         fold_quotes: bool,
         allcaps_min: Option<usize>,
@@ -590,7 +592,7 @@ impl Claude {
         }
     }
 
-    /// v3 boundary rules, exactly as ctok measures them (marks split words).
+    /// v3 boundary rules, exactly as ctok measures them on Claude (marks split words).
     pub fn v3() -> Self {
         Self {
             fold_quotes: true,
@@ -600,7 +602,7 @@ impl Claude {
         }
     }
 
-    /// v4.7 boundary rules: no quote folding, no ⟨caps⟩ (marks split words).
+    /// v4.7 boundary rules on Claude: no quote folding, no ⟨caps⟩ (marks split words).
     pub fn v47() -> Self {
         Self {
             fold_quotes: false,
@@ -610,7 +612,7 @@ impl Claude {
         }
     }
 
-    /// v4.8 boundary rules: v4.7 without the frame ⟨bow⟩ (marks split words).
+    /// v4.8 boundary rules on Claude: v4.7 without the frame ⟨bow⟩ (marks split words).
     pub fn v48() -> Self {
         Self {
             fold_quotes: false,
@@ -742,7 +744,7 @@ impl Claude {
     }
 }
 
-impl pipeline::Normalizer for Claude {
+impl pipeline::Normalizer for MarkBoundaries {
     fn normalize<'a>(&self, input: &'a str, _offset: usize) -> Result<Cow<'a, str>> {
         // Every input is its own message: text start counts as message start
         // for border purposes regardless of where the input sits in a pair.
@@ -797,18 +799,18 @@ mod tests {
 
     #[test]
     fn test_marked_stream_v3() {
-        let claude = Claude::v3();
+        let mark = MarkBoundaries::v3();
         for (input, expected) in v3_cases() {
-            assert_eq!(claude.marked_stream(input), expected, "input {:?}", input);
+            assert_eq!(mark.marked_stream(input), expected, "input {:?}", input);
         }
     }
 
     #[test]
     fn test_marks_part_of_words_keeps_marks_in_words() {
         // The article's three examples: Yoruba graves, Hindi viramas and the
-        // Thai tone mark split words under the Claude presets but stay inside
-        // under the default.
-        let fixed = Claude::default();
+        // Thai tone marks split words under the ctok-faithful presets but stay
+        // inside under the default.
+        let fixed = MarkBoundaries::default();
         assert!(fixed.marks_part_of_words);
         assert_eq!(fixed.marked_stream("ọ̀rọ̀"), format!("{B}ọ̀rọ̀{E}"));
         assert_eq!(fixed.marked_stream("राष्ट्रीय"), format!("{B}राष्ट्रीय{E}"));
@@ -819,7 +821,7 @@ mod tests {
             format!("{B}ว\u{e31}นน\u{e35}\u{e49}{E}")
         );
 
-        let buggy = Claude::v3();
+        let buggy = MarkBoundaries::v3();
         assert!(!buggy.marks_part_of_words);
         assert_eq!(buggy.marked_stream("ọ̀rọ̀"), format!("{B}ọ{E}̀{B}rọ{E}̀"));
         assert_eq!(
@@ -836,42 +838,42 @@ mod tests {
     fn test_marks_part_of_words_keeps_vs_riding() {
         // A variation selector still rides its base in fixed mode: the emoji
         // stays one hard run, and the selector never opens a word run.
-        let fixed = Claude::default();
+        let fixed = MarkBoundaries::default();
         assert_eq!(fixed.marked_stream("a✈️b"), format!("{B}a{E}✈️{B}b{E}"));
     }
 
     #[test]
     fn test_marked_stream_v47() {
-        let claude = Claude::v47();
-        assert_eq!(claude.marked_stream("HELLO"), format!("{B}HELLO{E}"));
+        let mark = MarkBoundaries::v47();
+        assert_eq!(mark.marked_stream("HELLO"), format!("{B}HELLO{E}"));
         assert_eq!(
-            claude.marked_stream("\u{201C}hi\u{201D}"),
+            mark.marked_stream("\u{201C}hi\u{201D}"),
             format!("{B}\u{201C}{B}hi{E}\u{201D}")
         );
-        assert_eq!(claude.marked_stream("Hello"), format!("{S}{B}hello{E}"));
-        assert_eq!(claude.marked_stream("123"), format!("{B}123"));
+        assert_eq!(mark.marked_stream("Hello"), format!("{S}{B}hello{E}"));
+        assert_eq!(mark.marked_stream("123"), format!("{B}123"));
     }
 
     #[test]
     fn test_marked_stream_v48() {
-        let claude = Claude::v48();
-        assert_eq!(claude.marked_stream("123"), "123");
-        assert_eq!(claude.marked_stream("'tis"), format!("'{B}tis{E}"));
-        assert_eq!(claude.marked_stream("hello"), format!("{B}hello{E}"));
+        let mark = MarkBoundaries::v48();
+        assert_eq!(mark.marked_stream("123"), "123");
+        assert_eq!(mark.marked_stream("'tis"), format!("'{B}tis{E}"));
+        assert_eq!(mark.marked_stream("hello"), format!("{B}hello{E}"));
     }
 
     #[test]
     fn test_marked_stream_empty() {
-        assert_eq!(Claude::default().marked_stream(""), B);
-        assert_eq!(Claude::v48().marked_stream(""), "");
+        assert_eq!(MarkBoundaries::default().marked_stream(""), B);
+        assert_eq!(MarkBoundaries::v48().marked_stream(""), "");
     }
 
     #[test]
     fn test_normalize_rewrites() {
         use crate::pipeline::Normalizer;
-        let claude = Claude::default();
+        let mark = MarkBoundaries::default();
         assert_eq!(
-            &*claude.normalize("hello world", 0).unwrap(),
+            &*mark.normalize("hello world", 0).unwrap(),
             format!("{B}hello{E}{B}world{E}")
         );
     }

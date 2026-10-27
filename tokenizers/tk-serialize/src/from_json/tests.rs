@@ -186,7 +186,7 @@ const REFUSED_BERT: &[(&str, &str, &str)] = &[];
 #[cfg(feature = "normalizers")]
 #[rustfmt::skip]
 const REFUSED_CLAUDE: &[(&str, &str, &str)] = &[
-    ("normalizer", r#"{"type": "Claude", "fold_quotes": true, "frame_bow": true}"#, "has no `allcaps_min`"),
+    ("normalizer", r#"{"type": "MarkBoundaries", "fold_quotes": true, "frame_bow": true}"#, "has no `allcaps_min`"),
 ];
 #[cfg(not(feature = "normalizers"))]
 const REFUSED_CLAUDE: &[(&str, &str, &str)] = &[];
