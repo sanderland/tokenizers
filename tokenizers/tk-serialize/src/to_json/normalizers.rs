@@ -82,6 +82,7 @@ fn write_one(out: &mut Out, normalizer: &PipelineNormalizer) -> Result<()> {
                 None => out.field_null("allcaps_min"),
             }
             out.field_bool("frame_bow", claude.frame_bow);
+            out.field_bool("marks_part_of_words", claude.marks_part_of_words);
             out.obj_close();
         }
         #[cfg(feature = "normalizers")]

@@ -89,6 +89,7 @@ fn push_normalizer(cfg: &Json<'_>, out: &mut Vec<PipelineNormalizer>) -> Result<
                 cfg.need(&owner, "fold_quotes", Json::as_bool)?,
                 allcaps_min,
                 cfg.need(&owner, "frame_bow", Json::as_bool)?,
+                cfg.need(&owner, "marks_part_of_words", Json::as_bool)?,
             )));
         }
         #[cfg(feature = "normalizers")]

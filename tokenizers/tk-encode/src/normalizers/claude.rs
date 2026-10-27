@@ -111,7 +111,7 @@ fn is_new_cased(c: char) -> bool {
     NEW_CASE_PAIRS.iter().any(|&(hi, lo)| hi == c || lo == c)
 }
 
-fn classify(c: char) -> Class {
+fn classify(c: char, marks_part_of_words: bool) -> Class {
     if is_new_cased(c) {
         return Class::Wordy;
     }
@@ -143,7 +143,10 @@ fn classify(c: char) -> Class {
         return Class::Hard;
     }
     if c.is_mark() {
-        return if o < 0x10000 && is_alphabetic(c) {
+        // Fixed mode keeps every mark in its word. Buggy mode (Claude) keeps
+        // only Alphabetic marks in range; the rest split the word. Variation
+        // selectors return Hard above and ride their base in both modes.
+        return if marks_part_of_words || (o < 0x10000 && is_alphabetic(c)) {
             Class::Wordy
         } else {
             Class::Hard
@@ -418,22 +421,27 @@ fn hard_kind(ch: char) -> u8 {
 
 type Run = (Class, String);
 
-fn split_runs(norm: &str) -> Vec<Run> {
+fn split_runs(norm: &str, marks_part_of_words: bool) -> Vec<Run> {
     let chars: Vec<char> = norm.chars().collect();
     if chars.is_empty() {
         return vec![];
     }
     let mut out: Vec<Run> = vec![];
     let mut cur = String::from(chars[0]);
-    let mut cur_cls = classify(chars[0]);
-    if cur_cls == Class::Wordy && is_stray_mark(chars[0]) {
+    let mut cur_cls = classify(chars[0], marks_part_of_words);
+    // Stray-mark splitting is part of the mark bug; fixed mode never splits it.
+    if !marks_part_of_words && cur_cls == Class::Wordy && is_stray_mark(chars[0]) {
         cur_cls = Class::StrayMark;
     }
     for &ch in &chars[1..] {
-        let c = classify(ch);
+        let c = classify(ch, marks_part_of_words);
         if (cur_cls == Class::StrayMark && c == Class::Wordy && is_stray_mark(ch)) || c == cur_cls {
             cur.push(ch);
-        } else if c == Class::Wordy && is_stray_mark(ch) && cur_cls != Class::Wordy {
+        } else if !marks_part_of_words
+            && c == Class::Wordy
+            && is_stray_mark(ch)
+            && cur_cls != Class::Wordy
+        {
             out.push((cur_cls, std::mem::take(&mut cur)));
             cur.push(ch);
             cur_cls = Class::StrayMark;
@@ -534,9 +542,9 @@ fn apply_seam_law(marked: &str) -> String {
 /// (word boundaries, case and absorbed spaces as markers). The model then
 /// tiles the marked stream whole.
 ///
-/// Options select the ctok family boundary rules; the default is v3.
-/// v4.7 is `fold_quotes: false, allcaps_min: None`; v4.8 adds
-/// `frame_bow: false` on top of that.
+/// Options select the ctok family boundary rules. The default is the fixed
+/// configuration: v3 rules with the mark-splitting bug repaired.
+/// `v3`, `v47` and `v48` reproduce ctok's families exactly, bug included.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Claude {
@@ -546,43 +554,69 @@ pub struct Claude {
     pub allcaps_min: Option<usize>,
     /// Text starts as if after a space (v3/v4.7; v4.8 has no frame ⟨bow⟩).
     pub frame_bow: bool,
+    /// Keep combining marks inside their words. Claude instead splits words
+    /// at marks without the Unicode Alphabetic property (combining accents,
+    /// viramas, tone marks), so Yoruba, Hindi, Thai and friends tokenize
+    /// badly; see "Small pre-tokenization bugs with a big multilingual
+    /// price" (Token Contributions, Sep 2026). True is the fix and the
+    /// default; the ctok family presets set it false to match Claude.
+    pub marks_part_of_words: bool,
 }
 
 impl Default for Claude {
-    /// The `"claude"` preset: v3 boundary rules, ctok's default family.
+    /// v3 boundary rules with the mark-splitting bug repaired.
     fn default() -> Self {
         Self {
             fold_quotes: true,
             allcaps_min: Some(4),
             frame_bow: true,
+            marks_part_of_words: true,
         }
     }
 }
 
 impl Claude {
-    pub fn new(fold_quotes: bool, allcaps_min: Option<usize>, frame_bow: bool) -> Self {
+    pub fn new(
+        fold_quotes: bool,
+        allcaps_min: Option<usize>,
+        frame_bow: bool,
+        marks_part_of_words: bool,
+    ) -> Self {
         Self {
             fold_quotes,
             allcaps_min,
             frame_bow,
+            marks_part_of_words,
         }
     }
 
-    /// v4.7 boundary rules: no quote folding, no ⟨caps⟩.
+    /// v3 boundary rules, exactly as ctok measures them (marks split words).
+    pub fn v3() -> Self {
+        Self {
+            fold_quotes: true,
+            allcaps_min: Some(4),
+            frame_bow: true,
+            marks_part_of_words: false,
+        }
+    }
+
+    /// v4.7 boundary rules: no quote folding, no ⟨caps⟩ (marks split words).
     pub fn v47() -> Self {
         Self {
             fold_quotes: false,
             allcaps_min: None,
             frame_bow: true,
+            marks_part_of_words: false,
         }
     }
 
-    /// v4.8 boundary rules: v4.7 without the frame ⟨bow⟩.
+    /// v4.8 boundary rules: v4.7 without the frame ⟨bow⟩ (marks split words).
     pub fn v48() -> Self {
         Self {
             fold_quotes: false,
             allcaps_min: None,
             frame_bow: false,
+            marks_part_of_words: false,
         }
     }
 
@@ -604,7 +638,7 @@ impl Claude {
             })
             .collect();
 
-        let runs = split_runs(&norm);
+        let runs = split_runs(&norm, self.marks_part_of_words);
         if runs.is_empty() {
             return if self.frame_bow {
                 BOW_G.to_string()
@@ -763,10 +797,47 @@ mod tests {
 
     #[test]
     fn test_marked_stream_v3() {
-        let claude = Claude::default();
+        let claude = Claude::v3();
         for (input, expected) in v3_cases() {
             assert_eq!(claude.marked_stream(input), expected, "input {:?}", input);
         }
+    }
+
+    #[test]
+    fn test_marks_part_of_words_keeps_marks_in_words() {
+        // The article's three examples: Yoruba graves, Hindi viramas and the
+        // Thai tone mark split words under the Claude presets but stay inside
+        // under the default.
+        let fixed = Claude::default();
+        assert!(fixed.marks_part_of_words);
+        assert_eq!(fixed.marked_stream("ọ̀rọ̀"), format!("{B}ọ̀rọ̀{E}"));
+        assert_eq!(fixed.marked_stream("राष्ट्रीय"), format!("{B}राष्ट्रीय{E}"));
+        // วันนี้ with the final U+0E49 tone mark spelled out: it is the mark
+        // the bug splits off, so the literal must not lose it silently.
+        assert_eq!(
+            fixed.marked_stream("ว\u{e31}นน\u{e35}\u{e49}"),
+            format!("{B}ว\u{e31}นน\u{e35}\u{e49}{E}")
+        );
+
+        let buggy = Claude::v3();
+        assert!(!buggy.marks_part_of_words);
+        assert_eq!(buggy.marked_stream("ọ̀rọ̀"), format!("{B}ọ{E}̀{B}rọ{E}̀"));
+        assert_eq!(
+            buggy.marked_stream("राष्ट्रीय"),
+            format!("{B}राष{E}्{B}ट{E}्{B}रीय{E}")
+        );
+        assert_eq!(
+            buggy.marked_stream("ว\u{e31}นน\u{e35}\u{e49}"),
+            format!("{B}ว\u{e31}นน\u{e35}{E}\u{e49}")
+        );
+    }
+
+    #[test]
+    fn test_marks_part_of_words_keeps_vs_riding() {
+        // A variation selector still rides its base in fixed mode: the emoji
+        // stays one hard run, and the selector never opens a word run.
+        let fixed = Claude::default();
+        assert_eq!(fixed.marked_stream("a✈️b"), format!("{B}a{E}✈️{B}b{E}"));
     }
 
     #[test]
