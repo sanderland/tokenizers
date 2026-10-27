@@ -225,9 +225,10 @@ impl<'a> Lattice<'a> {
 
     /// Viterbi over the same lattice, minimizing the lexicographic
     /// `(token_count, -score)` cost: the segmentation with the fewest tokens
-    /// wins, ties broken by highest total score, remaining ties by first
-    /// found. Backtrace state lives in side tables so the score-based
-    /// `viterbi`/`nbest`/`sample` paths are untouched.
+    /// wins, ties broken by highest total score, remaining ties longest-first
+    /// (at each end position the latest start wins, script_tok MinGram's
+    /// last-write rule). Backtrace state lives in side tables so the
+    /// score-based `viterbi`/`nbest`/`sample` paths are untouched.
     pub fn viterbi_min_tokens(&mut self) -> Vec<NodeRef> {
         let len = self.len;
         let eos_id = self.begin_nodes[len][0].borrow().node_id;
@@ -246,21 +247,28 @@ impl<'a> Lattice<'a> {
                 let rscore = rnode.borrow().score;
                 let mut best_here: Option<(usize, f64)> = None;
                 let mut best_node: Option<NodeRef> = None;
+                // Start of the current best predecessor; decides full ties.
+                let mut best_start = 0;
                 for lnode in &self.end_nodes[pos] {
                     if let Some((count, score)) = best[lnode.borrow().node_id] {
                         // The eos node terminates the path; it is not a token.
                         let count = if rid == eos_id { count } else { count + 1 };
                         let candidate = (count, score + rscore);
+                        let start = lnode.borrow().pos;
                         let better = match best_here {
                             None => true,
                             Some((best_count, best_score)) => {
                                 candidate.0 < best_count
                                     || (candidate.0 == best_count && candidate.1 > best_score)
+                                    || (candidate.0 == best_count
+                                        && candidate.1 == best_score
+                                        && start > best_start)
                             }
                         };
                         if better {
                             best_node = Some(lnode.clone());
                             best_here = Some(candidate);
+                            best_start = start;
                         }
                     }
                 }
@@ -798,11 +806,9 @@ mod tests {
         lattice.insert(2, 1, -10.0, 8); // c
         lattice.insert(3, 1, -10.0, 9); // d
 
-        // [ab, cd] and [a, bcd] tie on count (2) and score (2.0).
-        let first = lattice.tokens_min_tokens();
-        let second = lattice.tokens_min_tokens();
-        assert_eq!(first, second);
-        assert_eq!(first.len(), 2);
+        // [ab, cd] and [a, bcd] tie on count (2) and score (2.0);
+        // longest-first picks [ab, cd].
+        assert_eq!(lattice.tokens_min_tokens(), vec!["ab", "cd"]);
     }
 
     #[test]
