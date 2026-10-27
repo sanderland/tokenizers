@@ -73,6 +73,18 @@ fn write_one(out: &mut Out, normalizer: &PipelineNormalizer) -> Result<()> {
         PipelineNormalizer::Lowercase(_) => bare(out, "Lowercase"),
         PipelineNormalizer::ByteLevel(_) => bare(out, "ByteLevel"),
         #[cfg(feature = "normalizers")]
+        PipelineNormalizer::Claude(claude) => {
+            out.obj_open();
+            out.type_tag("Claude");
+            out.field_bool("fold_quotes", claude.fold_quotes);
+            match claude.allcaps_min {
+                Some(min) => out.field_usize("allcaps_min", min),
+                None => out.field_null("allcaps_min"),
+            }
+            out.field_bool("frame_bow", claude.frame_bow);
+            out.obj_close();
+        }
+        #[cfg(feature = "normalizers")]
         PipelineNormalizer::Bert(bert) => {
             out.obj_open();
             out.type_tag("BertNormalizer");

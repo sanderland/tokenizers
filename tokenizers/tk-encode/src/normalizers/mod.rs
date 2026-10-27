@@ -1,6 +1,8 @@
 #[cfg(feature = "normalizers")]
 pub mod bert;
 pub mod byte_level;
+#[cfg(feature = "normalizers")]
+pub mod claude;
 pub mod metaspace;
 #[cfg(feature = "normalizers")]
 pub mod precompiled;
@@ -15,6 +17,8 @@ pub mod utils;
 #[cfg(feature = "normalizers")]
 pub use crate::normalizers::bert::BertNormalizer;
 pub use crate::normalizers::byte_level::ByteLevel;
+#[cfg(feature = "normalizers")]
+pub use crate::normalizers::claude::Claude;
 #[cfg(feature = "normalizers")]
 pub use crate::normalizers::precompiled::Precompiled;
 pub use crate::normalizers::prepend::Prepend;

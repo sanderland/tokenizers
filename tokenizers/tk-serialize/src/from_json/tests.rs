@@ -182,6 +182,15 @@ const REFUSED_BERT: &[(&str, &str, &str)] = &[
 #[cfg(not(feature = "normalizers"))]
 const REFUSED_BERT: &[(&str, &str, &str)] = &[];
 
+/// `allcaps_min` must be present (`null` disables); the bools are `need`ed.
+#[cfg(feature = "normalizers")]
+#[rustfmt::skip]
+const REFUSED_CLAUDE: &[(&str, &str, &str)] = &[
+    ("normalizer", r#"{"type": "Claude", "fold_quotes": true, "frame_bow": true}"#, "has no `allcaps_min`"),
+];
+#[cfg(not(feature = "normalizers"))]
+const REFUSED_CLAUDE: &[(&str, &str, &str)] = &[];
+
 #[test]
 fn a_legacy_or_malformed_shape_is_refused_by_name() {
     for (slot, json, message) in REFUSED
@@ -189,6 +198,7 @@ fn a_legacy_or_malformed_shape_is_refused_by_name() {
         .chain(REFUSED_UNIGRAM)
         .chain(REFUSED_WORDPIECE)
         .chain(REFUSED_BERT)
+        .chain(REFUSED_CLAUDE)
     {
         let error = read_err(&config(&[(slot, json)]));
         assert!(error.contains(message), "{slot}: {json}\ngot: {error}");

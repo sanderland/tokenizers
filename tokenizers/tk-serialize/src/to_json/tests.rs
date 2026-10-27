@@ -257,6 +257,16 @@ const BERT: &[(&str, &str)] = &[
 #[cfg(not(feature = "normalizers"))]
 const BERT: &[(&str, &str)] = &[];
 
+/// `allcaps_min: null` disables ⟨caps⟩ (the v4.7 spelling); 4 is the v3 preset.
+#[cfg(feature = "normalizers")]
+#[rustfmt::skip]
+const CLAUDE: &[(&str, &str)] = &[
+    ("normalizer", r#"{"type": "Claude", "fold_quotes": true, "allcaps_min": 4, "frame_bow": true}"#),
+    ("normalizer", r#"{"type": "Claude", "fold_quotes": false, "allcaps_min": null, "frame_bow": true}"#),
+];
+#[cfg(not(feature = "normalizers"))]
+const CLAUDE: &[(&str, &str)] = &[];
+
 /// All four fields are required, so none may go missing on the way out.
 #[cfg(feature = "wordpiece")]
 #[rustfmt::skip]
@@ -268,7 +278,7 @@ const WORDPIECE: &[(&str, &str)] = &[];
 
 #[test]
 fn components_round_trip_to_their_canonical_spelling() {
-    for (slot, spelling) in IDEMPOTENT.iter().chain(BERT).chain(WORDPIECE) {
+    for (slot, spelling) in IDEMPOTENT.iter().chain(BERT).chain(CLAUDE).chain(WORDPIECE) {
         assert_eq!(
             written(slot, spelling),
             json(spelling),
