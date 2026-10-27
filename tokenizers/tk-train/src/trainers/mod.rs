@@ -4,6 +4,10 @@
 #[cfg(feature = "bpe")]
 pub mod bpe;
 #[cfg(feature = "unigram")]
+pub mod mingram;
+#[cfg(feature = "unigram")]
+pub mod seed;
+#[cfg(feature = "unigram")]
 pub mod unigram;
 #[cfg(feature = "wordlevel")]
 pub mod wordlevel;
@@ -12,6 +16,10 @@ pub mod wordpiece;
 
 #[cfg(feature = "bpe")]
 pub use bpe::*;
+#[cfg(feature = "unigram")]
+pub use mingram::*;
+#[cfg(feature = "unigram")]
+pub use seed::SeedInit;
 #[cfg(feature = "unigram")]
 pub use unigram::*;
 #[cfg(feature = "wordlevel")]
@@ -37,6 +45,8 @@ pub enum TrainerWrapper {
     WordLevelTrainer(WordLevelTrainer),
     #[cfg(feature = "unigram")]
     UnigramTrainer(UnigramTrainer),
+    #[cfg(feature = "unigram")]
+    MinGramTrainer(MinGramTrainer),
 }
 
 impl Trainer for TrainerWrapper {
@@ -52,6 +62,8 @@ impl Trainer for TrainerWrapper {
             Self::WordLevelTrainer(wpt) => wpt.should_show_progress(),
             #[cfg(feature = "unigram")]
             Self::UnigramTrainer(wpt) => wpt.should_show_progress(),
+            #[cfg(feature = "unigram")]
+            Self::MinGramTrainer(wpt) => wpt.should_show_progress(),
         }
     }
 
@@ -79,6 +91,11 @@ impl Trainer for TrainerWrapper {
                 ModelWrapper::Unigram(u) => t.train(u),
                 _ => Err("UnigramTrainer can only train a Unigram".into()),
             },
+            #[cfg(feature = "unigram")]
+            Self::MinGramTrainer(t) => match model {
+                ModelWrapper::Unigram(u) => t.train(u),
+                _ => Err("MinGramTrainer can only train a Unigram".into()),
+            },
         }
     }
 
@@ -97,6 +114,8 @@ impl Trainer for TrainerWrapper {
             Self::WordLevelTrainer(wpt) => wpt.feed(iterator, process),
             #[cfg(feature = "unigram")]
             Self::UnigramTrainer(wpt) => wpt.feed(iterator, process),
+            #[cfg(feature = "unigram")]
+            Self::MinGramTrainer(wpt) => wpt.feed(iterator, process),
         }
     }
 }
@@ -117,6 +136,12 @@ impl From<WordPieceTrainer> for TrainerWrapper {
 impl From<UnigramTrainer> for TrainerWrapper {
     fn from(t: UnigramTrainer) -> Self {
         Self::UnigramTrainer(t)
+    }
+}
+#[cfg(feature = "unigram")]
+impl From<MinGramTrainer> for TrainerWrapper {
+    fn from(t: MinGramTrainer) -> Self {
+        Self::MinGramTrainer(t)
     }
 }
 #[cfg(feature = "wordlevel")]

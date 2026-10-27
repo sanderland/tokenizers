@@ -1,21 +1,15 @@
+use super::seed::{self, SeedInit, Sentence, SentencePiece};
 use crate::Trainer;
 use crate::progress::{ProgressBar, ProgressStyle};
 use ahash::{AHashMap, AHashSet};
 use log::debug;
 use serde::{Deserialize, Serialize};
-use std::cmp::Reverse;
 use std::convert::Infallible;
 use std::convert::TryInto;
 use tk_encode::Result;
 use tk_encode::models::unigram::{lattice::Lattice, model::Unigram};
 use tk_encode::utils::parallelism::*;
 use tk_encode::vocab::bucket_added_vocabulary::AddedToken;
-
-// A token and a score
-type SentencePiece = (String, f64);
-
-// A full sentence or word + it's count within the dataset
-type Sentence = (String, u32);
 
 fn digamma(mut x: f64) -> f64 {
     let mut result = 0.0;
@@ -38,14 +32,6 @@ pub enum UnigramTrainerError {
     VocabularyTooSmall,
 }
 
-fn to_log_prob(pieces: &mut [SentencePiece]) {
-    let sum: f64 = pieces.iter().map(|(_, score)| score).sum();
-    let logsum = sum.ln();
-    for (_, score) in pieces.iter_mut() {
-        *score = score.ln() - logsum;
-    }
-}
-
 /// A `UnigramTrainer` can train a `Unigram` model from `word_counts`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +48,7 @@ pub struct UnigramTrainer {
 
     pub max_piece_length: usize,
     seed_size: usize,
+    pub seed_init: SeedInit,
     words: AHashMap<String, u32>,
 }
 
@@ -78,6 +65,7 @@ pub struct UnigramTrainerBuilder {
     unk_token: Option<Option<String>>,
     max_piece_length: Option<usize>,
     seed_size: Option<usize>,
+    seed_init: Option<SeedInit>,
     words: Option<AHashMap<String, u32>>,
 }
 
@@ -127,6 +115,11 @@ impl UnigramTrainerBuilder {
         self
     }
 
+    pub fn seed_init(&mut self, seed_init: SeedInit) -> &mut Self {
+        self.seed_init = Some(seed_init);
+        self
+    }
+
     pub fn words(&mut self, words: AHashMap<String, u32>) -> &mut Self {
         self.words = Some(words);
         self
@@ -143,6 +136,7 @@ impl UnigramTrainerBuilder {
             unk_token: self.unk_token.clone().unwrap_or(None),
             max_piece_length: self.max_piece_length.unwrap_or(16),
             seed_size: self.seed_size.unwrap_or(1_000_000),
+            seed_init: self.seed_init.unwrap_or_default(),
             words: self.words.clone().unwrap_or_default(),
         })
     }
@@ -174,181 +168,6 @@ impl UnigramTrainer {
         }
     }
 
-    fn is_valid_sentencepiece(&self, char_string: &[char]) -> bool {
-        // Checks string length
-        // Space not in the substring, numbers, hiragana and more should be taken
-        // care of within pre_tokenizers.
-        // https://github.com/google/sentencepiece/blob/26be9516cd81d5315ee31c48d2438018e0eab879/src/trainer_interface.cc#L203
-        let n = char_string.len();
-        if char_string.is_empty() || n > self.max_piece_length {
-            return false;
-        }
-
-        true
-    }
-
-    fn finalize(&self, model: Unigram, required_chars: AHashSet<String>) -> Result<Unigram> {
-        let mut min_score_penalty = 0.0;
-        let min_score_penalty_delta = 0.0001;
-
-        let mut pieces: Vec<(String, f64)> = vec![];
-        let mut inserted: AHashSet<String> = AHashSet::new();
-
-        // We don't want to include the <UNK> that was used to train
-        inserted.insert("<UNK>".into());
-
-        let existing_pieces: AHashMap<String, f64> = model.iter().cloned().collect();
-        for c in required_chars {
-            if let Some(t) = existing_pieces.get(&c) {
-                inserted.insert(c.clone());
-                pieces.push((c, *t));
-            } else {
-                let score = model.min_score + min_score_penalty;
-
-                inserted.insert(c.clone());
-                pieces.push((c, score));
-                min_score_penalty += min_score_penalty_delta;
-            }
-        }
-
-        let (unk_id, need_add_unk) = if let Some(ref unk) = self.unk_token {
-            let unk_id = self
-                .special_tokens
-                .iter()
-                .enumerate()
-                .find_map(|(i, t)| if t.content == *unk { Some(i) } else { None });
-            match unk_id {
-                Some(id) => (Some(id), false),
-                None => (Some(0), true),
-            }
-        } else {
-            (None, false)
-        };
-
-        let vocab_size_without_special_tokens = if need_add_unk {
-            self.vocab_size as usize - self.special_tokens.len() - 1
-        } else {
-            self.vocab_size as usize - self.special_tokens.len()
-        };
-        for (token, score) in model.iter() {
-            if inserted.contains::<str>(token) {
-                continue;
-            }
-            inserted.insert(token.to_string());
-            pieces.push((token.to_string(), if score.is_nan() { 0.0 } else { *score }));
-
-            if pieces.len() == vocab_size_without_special_tokens {
-                break;
-            }
-        }
-        pieces.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap());
-
-        // Insert the necessary tokens
-        let mut special_tokens = self
-            .special_tokens
-            .iter()
-            .map(|t| (t.content.clone(), 0.0))
-            .collect::<Vec<_>>();
-        if need_add_unk {
-            special_tokens.insert(0, (self.unk_token.clone().unwrap(), 0.0));
-        }
-
-        Unigram::from(
-            special_tokens.into_iter().chain(pieces).collect(),
-            unk_id,
-            model.byte_fallback(),
-        )
-    }
-
-    fn required_chars(&self, word_counts: &[Sentence]) -> AHashSet<String> {
-        word_counts
-            .iter()
-            .flat_map(|(s, _count)| s.chars())
-            .chain(self.initial_alphabet.iter().copied())
-            .map(|c| c.to_string())
-            .collect()
-    }
-    fn make_seed_sentence_pieces(
-        &self,
-        sentences: &[Sentence],
-        _progress: &Option<ProgressBar>,
-    ) -> Vec<SentencePiece> {
-        // Put all sentences in a string, separated by \0
-        let total: usize = sentences
-            .iter()
-            .map(|(s, _)| s.chars().count())
-            .sum::<usize>()
-            + sentences.len();
-        let mut flat_string = String::with_capacity(total);
-        let mut all_chars: AHashMap<char, u32> = AHashMap::new();
-        let c_sentence_boundary = '\0';
-        let k_sentence_boundary = '\0'.to_string();
-        for (string, n) in sentences {
-            if string.is_empty() {
-                continue;
-            }
-            flat_string.push_str(string);
-            // XXX
-            // Comment suggests we add sentence boundary, but it seems to be missing from actual
-            // code in spm.
-            flat_string.push_str(&k_sentence_boundary);
-            for c in string.chars() {
-                if c != c_sentence_boundary {
-                    *all_chars.entry(c).or_insert(0) += n;
-                }
-            }
-        }
-        flat_string.shrink_to_fit();
-        #[cfg(feature = "esaxx_fast")]
-        let suffix = esaxx_rs::suffix(&flat_string).unwrap();
-        #[cfg(not(feature = "esaxx_fast"))]
-        let suffix = esaxx_rs::suffix_rs(&flat_string).unwrap();
-
-        //  Basic chars need to be in sentence pieces.
-        let mut seed_sentencepieces: Vec<SentencePiece> = vec![];
-
-        let mut sall_chars: Vec<_> = all_chars.into_iter().map(|(a, b)| (b, a)).collect();
-        // Reversed order
-        sall_chars.sort_by_key(|&a| Reverse(a));
-        let mut substr_index: Vec<_> = suffix
-            .iter()
-            .filter_map(|(string, freq)| {
-                if string.len() <= 1 {
-                    return None;
-                }
-                if string.contains(&c_sentence_boundary) {
-                    return None;
-                }
-                if !self.is_valid_sentencepiece(string) {
-                    return None;
-                }
-                let score = freq * string.len() as u32;
-                // if let Some(p) = &progress {
-                //     p.inc(1);
-                // }
-                Some((score, string))
-            })
-            .collect();
-
-        // Fill seed_sentencepieces
-        for (count, character) in sall_chars {
-            seed_sentencepieces.push((character.to_string(), count.into()));
-        }
-
-        // sort by decreasing score
-        substr_index.sort_by_key(|&a| Reverse(a));
-        for (score, char_string) in substr_index {
-            // Just in case
-            assert!(self.is_valid_sentencepiece(char_string));
-            let string: String = char_string.iter().collect();
-            seed_sentencepieces.push((string, score.into()));
-            if seed_sentencepieces.len() >= self.seed_size {
-                break;
-            }
-        }
-        to_log_prob(&mut seed_sentencepieces);
-        seed_sentencepieces
-    }
     fn prune_sentence_pieces(
         &self,
         model: &Unigram,
@@ -616,7 +435,14 @@ impl UnigramTrainer {
 
         // We use a UNK token when training, whatever the `self.unk_token`
         pieces.push(("<UNK>".into(), f64::NAN));
-        pieces.extend(self.make_seed_sentence_pieces(&sentences, &progress));
+        pieces.extend(seed::make_seed_pieces(
+            &sentences,
+            self.seed_init,
+            self.seed_size,
+            self.max_piece_length,
+            &self.initial_alphabet,
+            &progress,
+        )?);
         self.finalize_progress(&progress, sentences.len());
 
         // Useful to check compatibility with spm.
@@ -638,7 +464,7 @@ impl UnigramTrainer {
             + 1;
         let expected_updates = expected_loops * self.n_sub_iterations as usize;
         self.update_progress(&progress, expected_updates, "EM training");
-        let required_chars = self.required_chars(&sentences);
+        let required_chars = seed::required_chars(&sentences, &self.initial_alphabet);
         if required_chars.len() as u32 > self.vocab_size {
             return Err(Box::new(UnigramTrainerError::VocabularyTooSmall));
         }
@@ -680,7 +506,13 @@ impl UnigramTrainer {
         self.finalize_progress(&progress, expected_updates);
 
         // Finally, adjusts the size of sentencepices to be |vocab_size|.
-        *model = self.finalize(new_model, required_chars)?;
+        *model = seed::finalize(
+            self.vocab_size,
+            &self.special_tokens,
+            &self.unk_token,
+            &new_model,
+            required_chars,
+        )?;
 
         Ok(self.special_tokens.clone())
     }
@@ -735,78 +567,6 @@ impl Trainer for UnigramTrainer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assert_approx_eq::assert_approx_eq;
-    use std::iter::FromIterator;
-
-    #[test]
-    fn test_unigram_chars() {
-        let trainer = UnigramTrainerBuilder::default()
-            .show_progress(false)
-            .build()
-            .unwrap();
-
-        let sentences = vec![
-            ("This is a".to_string(), 1),
-            ("こんにちは友達".to_string(), 1),
-        ];
-
-        let required_chars = trainer.required_chars(&sentences);
-        assert_eq!(required_chars.len(), 13);
-
-        let progress = None;
-        let table = trainer.make_seed_sentence_pieces(&sentences, &progress);
-
-        let target_strings = vec![
-            "s", "i", " ", "達", "友", "ん", "は", "に", "ち", "こ", "h", "a", "T", "is ", "s ",
-        ];
-
-        let strings: Vec<_> = table.iter().map(|(string, _)| string).collect();
-        assert_eq!(strings, target_strings);
-
-        let scores = table.iter().map(|(_, score)| score);
-        let target_scores = vec![
-            -2.5649493574615367, // 2.0
-            -2.5649493574615367, // 2.0
-            -2.5649493574615367, // 2.0
-            -3.258096538021482,  // 1.0
-            -3.258096538021482,  // 1.0
-            -3.258096538021482,  // 1.0
-            -3.258096538021482,  // 1.0
-            -3.258096538021482,  // 1.0
-            -3.258096538021482,  // 1.0
-            -3.258096538021482,  // 1.0
-            -3.258096538021482,  // 1.0
-            -3.258096538021482,  // 1.0
-            -3.258096538021482,  // 1.0
-            -1.4663370687934272, // 6.0
-            -1.8718021769015916, // 4.0
-        ];
-
-        for (score, target_score) in scores.zip(target_scores) {
-            assert_approx_eq!(*score, target_score, 0.01);
-        }
-    }
-
-    #[test]
-    fn test_initial_alphabet() {
-        let trainer = UnigramTrainerBuilder::default()
-            .show_progress(false)
-            .initial_alphabet(AHashSet::from_iter(vec!['a', 'b', 'c', 'd', 'e', 'f']))
-            .build()
-            .unwrap();
-
-        let sentences = vec![("こんにちは友達".to_string(), 1)];
-        let required_chars = trainer.required_chars(&sentences);
-        assert_eq!(
-            required_chars,
-            vec![
-                "こ", "ん", "に", "ち", "は", "友", "達", "a", "b", "c", "d", "e", "f"
-            ]
-            .into_iter()
-            .map(|s| s.to_owned())
-            .collect::<AHashSet<_>>()
-        );
-    }
 
     #[test]
     fn test_unk_token() {
@@ -890,13 +650,36 @@ mod tests {
     }
 
     #[test]
-    fn test_to_log_prob() {
-        let mut a = vec![("".to_string(), 1.0), ("".to_string(), 2.0)];
-        to_log_prob(&mut a);
-        let scores = a.iter().map(|(_, score)| *score).collect::<Vec<_>>();
-        // ln(1) - ln(3)
-        assert_approx_eq!(scores[0], -1.098, 0.01);
-        // ln(2) - ln(3)
-        assert_approx_eq!(scores[1], -0.405, 0.01);
+    fn test_seed_init_default_is_substrings() {
+        let trainer = UnigramTrainer::default();
+        assert_eq!(trainer.seed_init, SeedInit::Substrings);
+    }
+
+    #[cfg(feature = "bpe")]
+    #[test]
+    fn test_unigram_trains_with_bpe_seed() {
+        let trainer = UnigramTrainer::builder()
+            .show_progress(false)
+            .vocab_size(20)
+            .seed_size(30)
+            .seed_init(SeedInit::Bpe)
+            .build()
+            .unwrap();
+
+        let mut unigram = Unigram::default();
+        trainer
+            .do_train(
+                vec![("hello".into(), 10), ("world".into(), 8)],
+                &mut unigram,
+            )
+            .unwrap();
+
+        assert!(unigram.get_vocab_size() <= 20);
+        for c in ["h", "e", "l", "o", "w", "r", "d"] {
+            assert!(unigram.token_to_id(c).is_some(), "missing char {}", c);
+        }
+        // Cross-combination: a UnigramTrainer model encodes under min_tokens.
+        unigram.set_objective(tk_encode::models::unigram::Objective::MinTokens);
+        assert!(!unigram.encode("hello").unwrap().is_empty());
     }
 }
