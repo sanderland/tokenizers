@@ -276,3 +276,116 @@ fn a_capacity_of_zero_turns_the_cache_off() {
     assert_eq!(pipeline_ids(&model, "abcd", &mut scratch), [8]);
     assert!(scratch.word_cache.is_none());
 }
+
+fn min_tokens_fixture() -> Unigram {
+    // "abcd" scores below the char path, so max_score and min_tokens differ.
+    let pieces = vec![
+        ("<unk>".to_string(), 0.0),
+        ("a".to_string(), 1.0),
+        ("b".to_string(), 1.0),
+        ("c".to_string(), 1.0),
+        ("d".to_string(), 1.0),
+        ("ab".to_string(), 1.5),
+        ("cd".to_string(), 1.5),
+        ("abcd".to_string(), 1.0),
+    ];
+    Unigram::from(pieces, Some(0), false).unwrap()
+}
+
+#[test]
+fn test_objective_default_is_max_score() {
+    let model = min_tokens_fixture();
+    assert_eq!(model.objective(), Objective::MaxScore);
+    assert_eq!(model.encode("abcd").unwrap(), vec!["a", "b", "c", "d"]);
+}
+
+#[test]
+fn test_objective_min_tokens() {
+    let mut model = min_tokens_fixture();
+    model.set_objective(Objective::MinTokens);
+    assert_eq!(model.encode("abcd").unwrap(), vec!["abcd"]);
+    // Switching back restores max-score encodings (cache was cleared).
+    model.set_objective(Objective::MaxScore);
+    assert_eq!(model.encode("abcd").unwrap(), vec!["a", "b", "c", "d"]);
+}
+
+#[test]
+fn min_tokens_agrees_on_the_legacy_and_pipeline_paths() {
+    // Both paths funnel through `encode_uncached`, so one objective switch
+    // moves both. Id 7 is "abcd".
+    let mut model = min_tokens_fixture();
+    let mut scratch = Model::init_scratch(&model);
+    assert_eq!(pipeline_ids(&model, "abcd", &mut scratch), [1, 2, 3, 4]);
+
+    model.set_objective(Objective::MinTokens);
+    let mut scratch = Model::init_scratch(&model);
+    assert_eq!(pipeline_ids(&model, "abcd", &mut scratch), [7]);
+}
+
+#[test]
+fn test_min_tokens_matches_brute_force() {
+    // Every string over {a, b} up to length 6: min_tokens must return a
+    // minimum-count segmentation, with the best score among those.
+    let pieces = vec![
+        ("<unk>".to_string(), 0.0),
+        ("a".to_string(), -1.0),
+        ("b".to_string(), -2.0),
+        ("ab".to_string(), -0.5),
+        ("ba".to_string(), -4.0),
+        ("aa".to_string(), -3.0),
+        ("bb".to_string(), -0.1),
+        ("aba".to_string(), -2.5),
+        ("bab".to_string(), -0.2),
+    ];
+    let scores: std::collections::HashMap<&str, f64> =
+        pieces.iter().map(|(t, s)| (t.as_str(), *s)).collect();
+    let model = Unigram::from(pieces.clone(), Some(0), false)
+        .unwrap()
+        .with_objective(Objective::MinTokens);
+
+    fn brute_force(s: &str, scores: &std::collections::HashMap<&str, f64>) -> (usize, f64) {
+        if s.is_empty() {
+            return (0, 0.0);
+        }
+        let mut best: Option<(usize, f64)> = None;
+        for len in 1..=s.len().min(3) {
+            if let Some(&score) = scores.get(&s[..len]) {
+                let (n, total) = brute_force(&s[len..], scores);
+                let candidate = (n + 1, total + score);
+                best = Some(match best {
+                    None => candidate,
+                    Some(b) if candidate.0 < b.0 || (candidate.0 == b.0 && candidate.1 > b.1) => {
+                        candidate
+                    }
+                    Some(b) => b,
+                });
+            }
+        }
+        best.expect("single chars cover every string")
+    }
+
+    let mut strings = vec![String::new()];
+    for _ in 0..6 {
+        let mut next = vec![];
+        for s in &strings {
+            next.push(format!("{s}a"));
+            next.push(format!("{s}b"));
+        }
+        strings.extend(next);
+    }
+    for s in &strings {
+        if s.is_empty() {
+            continue;
+        }
+        let (min_count, best_score) = brute_force(s, &scores);
+        let encoded = model.encode(s).unwrap();
+        let encoded_score: f64 = encoded.iter().map(|t| scores[t.as_str()]).sum();
+        assert_eq!(encoded.len(), min_count, "wrong count for {}", s);
+        assert!(
+            (encoded_score - best_score).abs() < 1e-9,
+            "wrong tiebreak for {}: {:?}",
+            s,
+            encoded
+        );
+    }
+}

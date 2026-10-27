@@ -758,4 +758,68 @@ mod tests {
         assert_approx_eq!(probs[7], (p3) / z, 0.001);
         assert_approx_eq!(probs[8], (p4) / z, 0.001);
     }
+
+    #[test]
+    fn test_viterbi_min_tokens_prefers_fewer() {
+        let mut lattice = Lattice::from("abcd", 1, 2);
+        lattice.insert(0, 4, 0.0, 3); // abcd: worst score, one token
+        lattice.insert(0, 2, 10.0, 4); // ab
+        lattice.insert(2, 2, 10.0, 5); // cd
+        lattice.insert(0, 1, 10.0, 6); // a
+        lattice.insert(1, 1, 10.0, 7); // b
+        lattice.insert(2, 1, 10.0, 8); // c
+        lattice.insert(3, 1, 10.0, 9); // d
+
+        assert_eq!(lattice.tokens(), vec!["a", "b", "c", "d"]);
+        assert_eq!(lattice.tokens_min_tokens(), vec!["abcd"]);
+    }
+
+    #[test]
+    fn test_viterbi_min_tokens_tiebreak_by_score() {
+        let mut lattice = Lattice::from("abc", 1, 2);
+        lattice.insert(0, 1, 0.0, 3); // a
+        lattice.insert(1, 1, 0.0, 4); // b
+        lattice.insert(2, 1, 0.0, 5); // c
+        lattice.insert(0, 2, 5.0, 6); // ab
+        lattice.insert(1, 2, 1.0, 7); // bc
+
+        // Both [ab, c] and [a, bc] use 2 tokens; higher score wins.
+        assert_eq!(lattice.tokens_min_tokens(), vec!["ab", "c"]);
+    }
+
+    #[test]
+    fn test_viterbi_min_tokens_full_tie_is_deterministic() {
+        let mut lattice = Lattice::from("abcd", 1, 2);
+        lattice.insert(0, 2, 1.0, 3); // ab
+        lattice.insert(2, 2, 1.0, 4); // cd
+        lattice.insert(0, 1, 0.0, 5); // a
+        lattice.insert(1, 3, 2.0, 6); // bcd
+        lattice.insert(1, 1, -10.0, 7); // b
+        lattice.insert(2, 1, -10.0, 8); // c
+        lattice.insert(3, 1, -10.0, 9); // d
+
+        // [ab, cd] and [a, bcd] tie on count (2) and score (2.0).
+        let first = lattice.tokens_min_tokens();
+        let second = lattice.tokens_min_tokens();
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 2);
+    }
+
+    #[test]
+    fn test_viterbi_min_tokens_unreachable_is_empty() {
+        let mut lattice = Lattice::from("abc", 1, 2);
+        lattice.insert(0, 1, 1.0, 3); // a; positions 1..3 unreachable
+
+        assert!(lattice.tokens_min_tokens().is_empty());
+    }
+
+    #[test]
+    fn test_viterbi_min_tokens_multibyte() {
+        let mut lattice = Lattice::from("あい", 1, 2);
+        lattice.insert(0, 3, 0.0, 3); // あ
+        lattice.insert(3, 3, 0.0, 4); // い
+        lattice.insert(0, 6, -100.0, 5); // あい
+
+        assert_eq!(lattice.tokens_min_tokens(), vec!["あい"]);
+    }
 }

@@ -453,7 +453,9 @@ impl Unigram {
             let mut token = String::new();
             for node in path.iter() {
                 let item = lattice.piece(&node.borrow());
-                if node.borrow().id == self.unk_id.ok_or(UnigramError::MissingUnkId)? {
+                // A plain comparison, not `ok_or(...)?`: with no `unk_id` no UNK
+                // node can be on the path, so there is nothing to fuse and no error.
+                if Some(node.borrow().id) == self.unk_id {
                     token.push_str(&item);
                 } else {
                     if !token.is_empty() {
