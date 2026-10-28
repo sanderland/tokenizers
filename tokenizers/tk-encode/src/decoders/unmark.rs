@@ -99,9 +99,7 @@ fn join_bytes(tokens: &[String]) -> String {
 }
 
 /// The seam law backwards: `⟨eow⟩[⟨shift⟩⟨caps⟩]*⟨bow⟩` restores the eaten
-/// space, keeping the case markers for the next pass. Only the `⟨bow⟩` goes:
-/// the `⟨eow⟩` stays because it ends the `⟨caps⟩` extent, which the marker
-/// pass reads.
+/// space, keeping the case markers for the next pass.
 fn restore_seams(marked: &str) -> String {
     let chars: Vec<char> = marked.chars().collect();
     let mut out = String::with_capacity(marked.len());
@@ -113,7 +111,6 @@ fn restore_seams(marked: &str) -> String {
                 j += 1;
             }
             if chars.get(j) == Some(&BOW_G) {
-                out.push(EOW_G);
                 out.push(' ');
                 out.extend(&chars[i + 1..j]);
                 i = j + 1;
@@ -127,8 +124,9 @@ fn restore_seams(marked: &str) -> String {
 }
 
 /// Strip markers, applying case and unescaping literals. A `⟨shift⟩`
-/// uppercases the next char, a `⟨caps⟩` everything to `⟨eow⟩`; both die at
-/// `⟨eow⟩`, past which their unit cannot reach.
+/// uppercases the next char; a `⟨caps⟩` uppercases to `⟨eow⟩` or whitespace,
+/// whichever ends its unit first (units never contain whitespace, so a
+/// restored seam space ends the extent the seam consumed).
 fn strip_markers(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut shift = false;
@@ -148,6 +146,9 @@ fn strip_markers(text: &str) -> String {
             '\u{E003}' => out.push(SHIFT_G),
             '\u{E004}' => out.push(CAPS_G),
             _ => {
+                if c.is_whitespace() {
+                    caps = false;
+                }
                 if shift {
                     shift = false;
                     out.extend(c.to_uppercase());
