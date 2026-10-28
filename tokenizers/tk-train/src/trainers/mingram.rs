@@ -50,7 +50,6 @@ pub struct MinGramTrainer {
     pub max_piece_length: usize,
     seed_size: Option<usize>,
     pub seed_init: SeedInit,
-    pub byte_prefixes: bool,
     pub prune_criterion: PruneCriterion,
     pub pruning_shrinking_factor: f64,
     pub skip_substring_in_batch: bool,
@@ -70,7 +69,6 @@ pub struct MinGramTrainerBuilder {
     max_piece_length: Option<usize>,
     seed_size: Option<usize>,
     seed_init: Option<SeedInit>,
-    byte_prefixes: Option<bool>,
     prune_criterion: Option<PruneCriterion>,
     pruning_shrinking_factor: Option<f64>,
     skip_substring_in_batch: Option<bool>,
@@ -123,15 +121,6 @@ impl MinGramTrainerBuilder {
         self
     }
 
-    /// Emit `<0x..>` byte pieces (256 singles plus observed multibyte
-    /// prefixes) so inference can tile uncovered bytes: ctok's byte floor.
-    /// Coverage needs no `unk_token`: uncovered chars fall back to single
-    /// chars in the search and tile through the floor one at a time.
-    pub fn byte_prefixes(&mut self, byte_prefixes: bool) -> &mut Self {
-        self.byte_prefixes = Some(byte_prefixes);
-        self
-    }
-
     /// Prune the least-used pieces (default) or minimum-increase. MI pairs
     /// best with iterative pruning (`pruning_shrinking_factor` above 0).
     pub fn prune_criterion(&mut self, prune_criterion: PruneCriterion) -> &mut Self {
@@ -170,7 +159,6 @@ impl MinGramTrainerBuilder {
             max_piece_length: self.max_piece_length.unwrap_or(16),
             seed_size: self.seed_size,
             seed_init: self.seed_init.unwrap_or(SeedInit::Bpe),
-            byte_prefixes: self.byte_prefixes.unwrap_or(false),
             prune_criterion: self.prune_criterion.unwrap_or_default(),
             pruning_shrinking_factor: self.pruning_shrinking_factor.unwrap_or(0.0),
             skip_substring_in_batch: self.skip_substring_in_batch.unwrap_or(true),
@@ -709,7 +697,6 @@ impl MinGramTrainer {
             &self.unk_token,
             &new_model,
             required_chars,
-            self.byte_prefixes,
         )?;
         model.set_objective(Objective::MinTokens);
 
@@ -857,7 +844,7 @@ mod tests {
     fn test_mingram_trains_with_bpe_seed() {
         let trainer = MinGramTrainer::builder()
             .show_progress(false)
-            .vocab_size(20)
+            .vocab_size(300)
             .seed_size(30)
             .build()
             .unwrap();
@@ -867,7 +854,7 @@ mod tests {
         trainer.do_train(tiny_corpus(), &mut model).unwrap();
 
         assert_eq!(model.objective(), Objective::MinTokens);
-        assert!(model.get_vocab_size() <= 20);
+        assert!(model.get_vocab_size() <= 300);
         // Every corpus char is encodable.
         for c in ["h", "e", "l", "o", " ", "w", "r", "d"] {
             assert!(model.token_to_id(c).is_some(), "missing char {}", c);
@@ -881,7 +868,7 @@ mod tests {
     fn test_mingram_trains_with_substring_seed() {
         let trainer = MinGramTrainer::builder()
             .show_progress(false)
-            .vocab_size(20)
+            .vocab_size(300)
             .seed_init(SeedInit::Substrings)
             .build()
             .unwrap();
@@ -890,7 +877,7 @@ mod tests {
         trainer.do_train(tiny_corpus(), &mut model).unwrap();
 
         assert_eq!(model.objective(), Objective::MinTokens);
-        assert!(model.get_vocab_size() <= 20);
+        assert!(model.get_vocab_size() <= 300);
     }
 
     #[test]
@@ -925,7 +912,7 @@ mod tests {
         // Cross-combination: min_tokens never uses more pieces than max_score.
         let trainer = MinGramTrainer::builder()
             .show_progress(false)
-            .vocab_size(20)
+            .vocab_size(300)
             .seed_init(SeedInit::Substrings)
             .build()
             .unwrap();
@@ -1000,7 +987,7 @@ mod tests {
         let train = || {
             let trainer = MinGramTrainer::builder()
                 .show_progress(false)
-                .vocab_size(20)
+                .vocab_size(300)
                 .seed_size(30)
                 .seed_init(SeedInit::Substrings)
                 .prune_criterion(PruneCriterion::MinimumIncrease)
@@ -1013,7 +1000,7 @@ mod tests {
             model.iter().cloned().collect::<Vec<_>>()
         };
         let once = train();
-        assert!(once.len() <= 20);
+        assert!(once.len() <= 300);
         assert_eq!(train(), once);
     }
 
@@ -1023,7 +1010,7 @@ mod tests {
         let train = || {
             let trainer = MinGramTrainer::builder()
                 .show_progress(false)
-                .vocab_size(20)
+                .vocab_size(300)
                 .seed_size(30)
                 .build()
                 .unwrap();
@@ -1035,33 +1022,33 @@ mod tests {
     }
 
     #[test]
-    fn test_byte_prefixes_opt_in() {
+    fn test_byte_floor_in_budget() {
         let corpus = || -> Vec<Sentence> {
             vec![("hello".into(), 10), ("日本語".into(), 8), ("🎉".into(), 3)]
         };
-        let train = |byte_prefixes: bool| {
+        let train = || {
             let trainer = MinGramTrainer::builder()
                 .show_progress(false)
-                .vocab_size(30)
+                .vocab_size(300)
                 .seed_size(40)
                 .seed_init(SeedInit::Substrings)
-                .byte_prefixes(byte_prefixes)
                 .build()
                 .unwrap();
             let mut model = Unigram::default();
             trainer.do_train(corpus(), &mut model).unwrap();
             model.iter().cloned().collect::<Vec<_>>()
         };
-        let off = train(false);
-        assert!(!off.iter().any(|(t, _)| t == "<0x00>"));
-        let on = train(true);
-        // The learned vocabulary is unchanged; the option only appends.
-        assert_eq!(&on[..off.len()], &off[..]);
-        let spellings: Vec<&str> = on.iter().map(|(t, _)| t.as_str()).collect();
+        let once = train();
+        // The floor counts toward vocab_size: never overshoot it.
+        assert!(once.len() <= 300, "overshot: {}", once.len());
+        let spellings: Vec<&str> = once.iter().map(|(t, _)| t.as_str()).collect();
         // 日 E697A5 -> E697; 🎉 F09F8E89 -> F09F, F09F8E.
-        for piece in ["<0x00>", "<0xFF>", "<0xE697>", "<0xF09F>", "<0xF09F8E>"] {
+        for piece in ["<0x00>", "<0xF4>", "<0xE697>", "<0xF09F>", "<0xF09F8E>"] {
             assert!(spellings.contains(&piece), "missing {piece}");
         }
-        assert_eq!(train(true), on);
+        for missing in ["<0xC0>", "<0xC1>", "<0xF5>", "<0xFF>"] {
+            assert!(!spellings.contains(&missing), "{missing} must be absent");
+        }
+        assert_eq!(train(), once);
     }
 }

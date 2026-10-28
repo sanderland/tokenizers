@@ -49,7 +49,6 @@ pub struct UnigramTrainer {
     pub max_piece_length: usize,
     seed_size: Option<usize>,
     pub seed_init: SeedInit,
-    pub byte_prefixes: bool,
     words: AHashMap<String, u32>,
 }
 
@@ -67,7 +66,6 @@ pub struct UnigramTrainerBuilder {
     max_piece_length: Option<usize>,
     seed_size: Option<usize>,
     seed_init: Option<SeedInit>,
-    byte_prefixes: Option<bool>,
     words: Option<AHashMap<String, u32>>,
 }
 
@@ -122,15 +120,6 @@ impl UnigramTrainerBuilder {
         self
     }
 
-    /// Emit `<0x..>` byte pieces (256 singles plus observed multibyte
-    /// prefixes) so inference can tile uncovered bytes: ctok's byte floor.
-    /// Coverage needs no `unk_token`: uncovered chars fall back to single
-    /// chars in the search and tile through the floor one at a time.
-    pub fn byte_prefixes(&mut self, byte_prefixes: bool) -> &mut Self {
-        self.byte_prefixes = Some(byte_prefixes);
-        self
-    }
-
     pub fn words(&mut self, words: AHashMap<String, u32>) -> &mut Self {
         self.words = Some(words);
         self
@@ -148,7 +137,6 @@ impl UnigramTrainerBuilder {
             max_piece_length: self.max_piece_length.unwrap_or(16),
             seed_size: self.seed_size,
             seed_init: self.seed_init.unwrap_or_default(),
-            byte_prefixes: self.byte_prefixes.unwrap_or(false),
             words: self.words.clone().unwrap_or_default(),
         })
     }
@@ -524,7 +512,6 @@ impl UnigramTrainer {
             &self.unk_token,
             &new_model,
             required_chars,
-            self.byte_prefixes,
         )?;
 
         Ok(self.special_tokens.clone())
@@ -680,7 +667,7 @@ mod tests {
     fn test_unigram_trains_with_bpe_seed() {
         let trainer = UnigramTrainer::builder()
             .show_progress(false)
-            .vocab_size(20)
+            .vocab_size(300)
             .seed_size(30)
             .seed_init(SeedInit::Bpe)
             .build()
@@ -694,7 +681,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(unigram.get_vocab_size() <= 20);
+        assert!(unigram.get_vocab_size() <= 300);
         for c in ["h", "e", "l", "o", "w", "r", "d"] {
             assert!(unigram.token_to_id(c).is_some(), "missing char {}", c);
         }
@@ -704,32 +691,27 @@ mod tests {
     }
 
     #[test]
-    fn test_byte_prefixes_opt_in() {
+    fn test_byte_floor_in_budget() {
         let corpus = || -> Vec<Sentence> {
             vec![("hello".into(), 10), ("日本語".into(), 8), ("🎉".into(), 3)]
         };
-        let train = |byte_prefixes: bool| {
-            let trainer = UnigramTrainer::builder()
-                .show_progress(false)
-                .vocab_size(30)
-                .seed_size(40)
-                .byte_prefixes(byte_prefixes)
-                .build()
-                .unwrap();
-            let mut unigram = Unigram::default();
-            trainer.do_train(corpus(), &mut unigram).unwrap();
-            unigram.iter().cloned().collect::<Vec<_>>()
-        };
-        let off = train(false);
-        assert!(!off.iter().any(|(t, _)| t == "<0x00>"));
-        let on = train(true);
-        // The learned vocabulary is unchanged; the option only appends.
-        assert_eq!(&on[..off.len()], &off[..]);
-        let spellings: Vec<&str> = on.iter().map(|(t, _)| t.as_str()).collect();
+        let trainer = UnigramTrainer::builder()
+            .show_progress(false)
+            .vocab_size(300)
+            .seed_size(40)
+            .build()
+            .unwrap();
+        let mut unigram = Unigram::default();
+        trainer.do_train(corpus(), &mut unigram).unwrap();
+        let spellings: Vec<&str> = unigram.iter().map(|(t, _)| t.as_str()).collect();
+        // The floor counts toward vocab_size: never overshoot it.
+        assert!(spellings.len() <= 300, "overshot: {}", spellings.len());
         // 日 E697A5 -> E697; 🎉 F09F8E89 -> F09F, F09F8E.
-        for piece in ["<0x00>", "<0xFF>", "<0xE697>", "<0xF09F>", "<0xF09F8E>"] {
+        for piece in ["<0x00>", "<0xF4>", "<0xE697>", "<0xF09F>", "<0xF09F8E>"] {
             assert!(spellings.contains(&piece), "missing {piece}");
         }
-        assert_eq!(train(true), on);
+        for missing in ["<0xC0>", "<0xC1>", "<0xF5>", "<0xFF>"] {
+            assert!(!spellings.contains(&missing), "{missing} must be absent");
+        }
     }
 }

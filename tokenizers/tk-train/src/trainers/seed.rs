@@ -276,30 +276,37 @@ fn prefix_pieces(required_chars: &AHashSet<String>) -> Vec<String> {
     prefixes
 }
 
+/// The byte floor: the 243 byte values that occur in valid UTF-8, plus the
+/// observed multibyte prefixes. C0, C1 and F5-FF never appear in valid
+/// UTF-8, so they get no pieces. One-byte prefixes are skipped too: a
+/// one-byte prefix plus a single tiles no better than two singles.
+fn byte_floor_pieces(required_chars: &AHashSet<String>) -> Vec<String> {
+    let mut out: Vec<String> = (0x00u32..=0x7F)
+        .chain(0x80..=0xBF)
+        .chain(0xC2..=0xF4)
+        .map(|b| format!("<0x{b:02X}>"))
+        .collect();
+    out.extend(prefix_pieces(required_chars));
+    out
+}
+
 /// Lay out the final model: required chars first (reusing trained scores,
 /// backfilling missing chars just below the minimum), truncated to
-/// `vocab_size` including special tokens and the unk token. With
-/// `byte_prefixes`, the 256 single-byte pieces plus observed multibyte
-/// prefixes are appended after the truncation, so the learned vocabulary is
-/// unchanged and enabling the option only appends.
+/// `vocab_size` including special tokens and the unk token. The byte floor
+/// counts toward `vocab_size` like any other piece; when the forced pieces
+/// (specials, required chars, floor) already exceed it, training fails
+/// instead of silently producing an oversized vocabulary.
 pub(crate) fn finalize(
     vocab_size: u32,
     special_tokens: &[AddedToken],
     unk_token: &Option<String>,
     model: &Unigram,
     required_chars: AHashSet<String>,
-    byte_prefixes: bool,
 ) -> Result<Unigram> {
     let mut min_score_penalty = 0.0;
     let min_score_penalty_delta = 0.0001;
 
-    let byte_candidates: Vec<String> = if byte_prefixes {
-        let mut out: Vec<String> = (0..=255u32).map(|b| format!("<0x{b:02X}>")).collect();
-        out.extend(prefix_pieces(&required_chars));
-        out
-    } else {
-        vec![]
-    };
+    let floor = byte_floor_pieces(&required_chars);
 
     let mut pieces: Vec<(String, f64)> = vec![];
     let mut inserted: AHashSet<String> = AHashSet::new();
@@ -312,6 +319,7 @@ pub(crate) fn finalize(
     // depend on hash iteration order.
     let mut required_chars: Vec<String> = required_chars.into_iter().collect();
     required_chars.sort();
+    let n_required = required_chars.len();
     for c in required_chars {
         if let Some(t) = existing_pieces.get(&c) {
             inserted.insert(c.clone());
@@ -342,7 +350,14 @@ pub(crate) fn finalize(
     if n_slots > vocab_size as usize {
         return Err(Box::new(UnigramTrainerError::VocabularyTooSmall));
     }
-    let vocab_size_without_special_tokens = vocab_size as usize - n_slots;
+    // Required chars share the budget, and the floor reserves its slots up
+    // front, so the final vocabulary (specials aside) is exactly
+    // `vocab_size` when the trained model has pieces to spare.
+    let target = vocab_size as usize - n_slots;
+    if n_required + floor.len() > target {
+        return Err(Box::new(UnigramTrainerError::VocabularyTooSmall));
+    }
+    let learned_target = target - floor.len();
     for (token, score) in model.iter() {
         if inserted.contains::<str>(token) {
             continue;
@@ -350,12 +365,12 @@ pub(crate) fn finalize(
         inserted.insert(token.to_string());
         pieces.push((token.to_string(), if score.is_nan() { 0.0 } else { *score }));
 
-        if pieces.len() == vocab_size_without_special_tokens {
+        if pieces.len() == learned_target {
             break;
         }
     }
     pieces.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap());
-    for spelling in byte_candidates {
+    for spelling in floor {
         if !inserted.contains::<str>(&spelling) {
             pieces.push((spelling, 0.0));
         }
@@ -373,7 +388,7 @@ pub(crate) fn finalize(
     Unigram::from(
         special_tokens.into_iter().chain(pieces).collect(),
         unk_id,
-        model.byte_fallback() || byte_prefixes,
+        true,
     )
 }
 
@@ -485,7 +500,7 @@ mod tests {
             AddedToken::from("<s>", true),
             AddedToken::from("</s>", true),
         ];
-        let err = finalize(1, &specials, &None, &model, chars, false).unwrap_err();
+        let err = finalize(1, &specials, &None, &model, chars).unwrap_err();
         assert!(
             err.to_string().contains("vocabulary"),
             "expected VocabularyTooSmall, got: {err}"
@@ -493,13 +508,26 @@ mod tests {
     }
 
     #[test]
-    fn test_finalize_sets_byte_fallback_with_floor() {
+    fn test_finalize_counts_the_byte_floor_in_the_budget() {
         let model = Unigram::from(vec![("a".into(), 0.0)], None, false).unwrap();
         let chars: AHashSet<String> = ["a".to_string()].into_iter().collect();
-        for byte_prefixes in [false, true] {
-            let out = finalize(30, &[], &None, &model, chars.clone(), byte_prefixes).unwrap();
-            assert_eq!(out.byte_fallback(), byte_prefixes);
+        // 1 required + 243 singles, no prefixes from a one-byte char.
+        let out = finalize(244, &[], &None, &model, chars).unwrap();
+        assert!(out.byte_fallback());
+        let spellings: Vec<&str> = out.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(spellings.len(), 244);
+        assert!(spellings.contains(&"<0x00>"));
+        assert!(spellings.contains(&"<0x7F>"));
+        assert!(spellings.contains(&"<0x80>"));
+        assert!(spellings.contains(&"<0xBF>"));
+        assert!(spellings.contains(&"<0xC2>"));
+        assert!(spellings.contains(&"<0xF4>"));
+        for missing in ["<0xC0>", "<0xC1>", "<0xF5>", "<0xFF>"] {
+            assert!(!spellings.contains(&missing), "{missing} must be absent");
         }
+        // One slot short of required + floor: fail, don't overshoot.
+        let chars: AHashSet<String> = ["a".to_string()].into_iter().collect();
+        assert!(finalize(243, &[], &None, &model, chars).is_err());
     }
 
     #[test]
