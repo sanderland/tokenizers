@@ -520,7 +520,9 @@ impl MinGramTrainer {
     }
 
     /// M-step: drop pieces with negligible expected counts and re-estimate
-    /// plain MLE log-probs (no Bayesian prior).
+    /// plain MLE log-probs (no Bayesian prior). Single chars are the
+    /// alphabet and never drop: a missing one routes its characters through
+    /// UNK for the rest of training, and MI then skips those words.
     fn run_m_step(&self, pieces: &[SentencePiece], expected: &[f64]) -> Vec<SentencePiece> {
         if pieces.len() != expected.len() {
             panic!(
@@ -541,10 +543,11 @@ impl MinGramTrainer {
                 new_pieces.push((piece.clone(), f64::NAN));
                 continue;
             }
-            if *freq < expected_frequency_threshold {
+            if *freq < expected_frequency_threshold && piece.chars().count() != 1 {
                 continue;
             }
-            new_pieces.push((piece.clone(), *freq));
+            let freq = (*freq).max(expected_frequency_threshold);
+            new_pieces.push((piece.clone(), freq));
             sum += freq;
         }
         let logsum = sum.ln();
@@ -790,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn test_m_step_drops_zero_counts_and_reestimates() {
+    fn test_m_step_drops_zero_counts_keeps_singles() {
         let trainer = MinGramTrainer::builder().build().unwrap();
         let pieces = vec![
             ("<UNK>".to_string(), f64::NAN),
@@ -800,13 +803,16 @@ mod tests {
         ];
         let new_pieces = trainer.run_m_step(&pieces, &[0.0, 4.0, 0.0, 2.0]);
 
-        assert_eq!(new_pieces.len(), 3);
+        // "b" has zero counts but is a single char: kept, floored at 0.5.
+        assert_eq!(new_pieces.len(), 4);
         assert_eq!(new_pieces[0].0, "<UNK>");
         assert!(new_pieces[0].1.is_nan());
         assert_eq!(new_pieces[1].0, "a");
-        assert_approx_eq!(new_pieces[1].1, (4.0_f64 / 6.0).ln(), 1e-9);
-        assert_eq!(new_pieces[2].0, "ab");
-        assert_approx_eq!(new_pieces[2].1, (2.0_f64 / 6.0).ln(), 1e-9);
+        assert_approx_eq!(new_pieces[1].1, (4.0_f64 / 6.5).ln(), 1e-9);
+        assert_eq!(new_pieces[2].0, "b");
+        assert_approx_eq!(new_pieces[2].1, (0.5_f64 / 6.5).ln(), 1e-9);
+        assert_eq!(new_pieces[3].0, "ab");
+        assert_approx_eq!(new_pieces[3].1, (2.0_f64 / 6.5).ln(), 1e-9);
     }
 
     #[test]

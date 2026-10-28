@@ -8,6 +8,7 @@
 use crate::progress::ProgressBar;
 #[cfg(feature = "bpe")]
 use crate::trainers::bpe::BpeTrainer;
+use crate::trainers::unigram::UnigramTrainerError;
 use ahash::{AHashMap, AHashSet};
 #[cfg(feature = "bpe")]
 use compact_str::CompactString;
@@ -341,11 +342,11 @@ pub(crate) fn finalize(
         (None, false)
     };
 
-    let vocab_size_without_special_tokens = if need_add_unk {
-        vocab_size as usize - special_tokens.len() - 1
-    } else {
-        vocab_size as usize - special_tokens.len()
-    };
+    let n_slots = special_tokens.len() + usize::from(need_add_unk);
+    if n_slots > vocab_size as usize {
+        return Err(Box::new(UnigramTrainerError::VocabularyTooSmall));
+    }
+    let vocab_size_without_special_tokens = vocab_size as usize - n_slots;
     for (token, score) in model.iter() {
         if inserted.contains::<str>(token) {
             continue;
@@ -478,6 +479,21 @@ mod tests {
         let first = make_bpe_seed_pieces(&sentences, 30, 16, &alphabet).unwrap();
         let second = make_bpe_seed_pieces(&sentences, 30, 16, &alphabet).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_finalize_rejects_vocab_smaller_than_specials() {
+        let model = Unigram::from(vec![("a".into(), 0.0)], None, false).unwrap();
+        let chars: AHashSet<String> = ["a".to_string()].into_iter().collect();
+        let specials = vec![
+            AddedToken::from("<s>", true),
+            AddedToken::from("</s>", true),
+        ];
+        let err = finalize(1, &specials, &None, &model, chars, false).unwrap_err();
+        assert!(
+            err.to_string().contains("vocabulary"),
+            "expected VocabularyTooSmall, got: {err}"
+        );
     }
 
     #[test]
