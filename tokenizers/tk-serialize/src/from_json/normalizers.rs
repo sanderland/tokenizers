@@ -84,12 +84,16 @@ fn push_normalizer(cfg: &Json<'_>, out: &mut Vec<PipelineNormalizer>) -> Result<
         )),
         #[cfg(feature = "normalizers")]
         "MarkBoundaries" => {
-            let allcaps_min = cfg
-                .get("allcaps_min")
-                .ok_or_else(|| -> tk_encode::Error {
-                    "MarkBoundaries has no `allcaps_min` (spell it `null` to disable)".into()
-                })?
-                .as_usize();
+            let allcaps = cfg.get("allcaps_min").ok_or_else(|| -> tk_encode::Error {
+                "MarkBoundaries has no `allcaps_min` (spell it `null` to disable)".into()
+            })?;
+            let allcaps_min = if allcaps.is_null() {
+                None
+            } else {
+                Some(allcaps.as_usize().ok_or_else(|| -> tk_encode::Error {
+                    "MarkBoundaries `allcaps_min` is not a non-negative integer or null".into()
+                })?)
+            };
             out.push(PipelineNormalizer::MarkBoundaries(MarkBoundaries::new(
                 allcaps_min,
                 cfg.need(&owner, "marks_part_of_words", Json::as_bool)?,
