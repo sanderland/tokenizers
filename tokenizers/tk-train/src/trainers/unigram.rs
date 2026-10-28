@@ -47,7 +47,7 @@ pub struct UnigramTrainer {
     pub unk_token: Option<String>,
 
     pub max_piece_length: usize,
-    seed_size: usize,
+    seed_size: Option<usize>,
     pub seed_init: SeedInit,
     pub byte_prefixes: bool,
     words: AHashMap<String, u32>,
@@ -144,7 +144,7 @@ impl UnigramTrainerBuilder {
             initial_alphabet: self.initial_alphabet.clone().unwrap_or_default(),
             unk_token: self.unk_token.clone().unwrap_or(None),
             max_piece_length: self.max_piece_length.unwrap_or(16),
-            seed_size: self.seed_size.unwrap_or(1_000_000),
+            seed_size: self.seed_size,
             seed_init: self.seed_init.unwrap_or_default(),
             byte_prefixes: self.byte_prefixes.unwrap_or(false),
             words: self.words.clone().unwrap_or_default(),
@@ -448,7 +448,7 @@ impl UnigramTrainer {
         pieces.extend(seed::make_seed_pieces(
             &sentences,
             self.seed_init,
-            self.seed_size,
+            self.seed_size.unwrap_or(seed::DEFAULT_SEED_SIZE),
             self.max_piece_length,
             &self.initial_alphabet,
             &progress,
@@ -664,6 +664,13 @@ mod tests {
     fn test_seed_init_default_is_substrings() {
         let trainer = UnigramTrainer::default();
         assert_eq!(trainer.seed_init, SeedInit::Substrings);
+    }
+
+    #[test]
+    fn test_seed_size_default_is_none() {
+        assert_eq!(UnigramTrainer::default().seed_size, None);
+        let trainer = UnigramTrainer::builder().seed_size(30).build().unwrap();
+        assert_eq!(trainer.seed_size, Some(30));
     }
 
     #[cfg(feature = "bpe")]

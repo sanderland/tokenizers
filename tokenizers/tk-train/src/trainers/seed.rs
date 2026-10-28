@@ -27,6 +27,9 @@ pub(crate) type SentencePiece = (String, f64);
 // A full sentence or word + its count within the dataset
 pub(crate) type Sentence = (String, u32);
 
+/// Seed vocabulary cap when the trainer's `seed_size` is unset (upstream default).
+pub(crate) const DEFAULT_SEED_SIZE: usize = 1_000_000;
+
 /// How a Unigram-family trainer builds its seed vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

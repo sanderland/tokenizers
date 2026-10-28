@@ -48,7 +48,7 @@ pub struct MinGramTrainer {
     pub unk_token: Option<String>,
 
     pub max_piece_length: usize,
-    seed_size: usize,
+    seed_size: Option<usize>,
     pub seed_init: SeedInit,
     pub byte_prefixes: bool,
     pub prune_criterion: PruneCriterion,
@@ -166,7 +166,7 @@ impl MinGramTrainerBuilder {
             initial_alphabet: self.initial_alphabet.clone().unwrap_or_default(),
             unk_token: self.unk_token.clone().unwrap_or(None),
             max_piece_length: self.max_piece_length.unwrap_or(16),
-            seed_size: self.seed_size.unwrap_or(1_000_000),
+            seed_size: self.seed_size,
             seed_init: self.seed_init.unwrap_or(SeedInit::Bpe),
             byte_prefixes: self.byte_prefixes.unwrap_or(false),
             prune_criterion: self.prune_criterion.unwrap_or_default(),
@@ -634,7 +634,7 @@ impl MinGramTrainer {
         pieces.extend(seed::make_seed_pieces(
             &sentences,
             self.seed_init,
-            self.seed_size,
+            self.seed_size.unwrap_or(seed::DEFAULT_SEED_SIZE),
             self.max_piece_length,
             &self.initial_alphabet,
             &progress,
@@ -821,6 +821,13 @@ mod tests {
 
         let strings: Vec<&str> = pruned.iter().map(|(s, _)| s.as_str()).collect();
         assert_eq!(strings, vec!["<UNK>", "a", "b", "ab"]);
+    }
+
+    #[test]
+    fn test_seed_size_default_is_none() {
+        assert_eq!(MinGramTrainer::default().seed_size, None);
+        let trainer = MinGramTrainer::builder().seed_size(30).build().unwrap();
+        assert_eq!(trainer.seed_size, Some(30));
     }
 
     #[cfg(feature = "bpe")]
