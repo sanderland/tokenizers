@@ -355,7 +355,7 @@ fn test_objective_min_tokens() {
 }
 
 #[test]
-fn test_min_tokens_skips_unreachable_and_raises_without_path() {
+fn test_min_tokens_skips_unreachable_and_falls_back_to_chars() {
     // A long token jumps over intermediate positions: their nodes have no
     // reachable predecessor and must not kill the whole path.
     let mut model = Unigram::from(
@@ -370,8 +370,29 @@ fn test_min_tokens_skips_unreachable_and_raises_without_path() {
     .unwrap();
     model.set_objective(Objective::MinTokens);
     assert_eq!(model.encode("abc").unwrap(), vec!["abc"]);
-    // Nothing covers "xyz" and there is no unk: an error, not zero tokens.
-    assert!(model.encode("xyz").is_err());
+    // Nothing covers "xyz" and there is no unk: the chars themselves tile
+    // as fallback, one per char, instead of an empty path.
+    assert_eq!(model.encode("xyz").unwrap(), vec!["x", "y", "z"]);
+}
+
+#[test]
+fn test_pipeline_raises_for_truly_uncoverable_input() {
+    // Fallback chars still need ids: with no byte pieces and no unk, id
+    // assignment raises instead of returning zero tokens.
+    let mut model = Unigram::from(
+        vec![
+            ("abc".to_string(), 0.0),
+            ("b".to_string(), -1.0),
+            ("c".to_string(), -1.0),
+        ],
+        None,
+        false,
+    )
+    .unwrap();
+    model.set_objective(Objective::MinTokens);
+    let mut scratch = Model::init_scratch(&model);
+    let mut output = vec![];
+    assert!(Model::tokenize_pipeline(&model, "xyz", &mut scratch, &mut output).is_err());
 }
 
 #[test]

@@ -81,6 +81,11 @@ impl std::fmt::Display for Lattice<'_> {
     }
 }
 
+/// Id carried by single-char fallback nodes: coverage for input the vocab
+/// cannot tile. `piece` still reads the char from the sentence, so only
+/// id-indexed readers care, and they treat out-of-vocab ids as missing.
+pub(crate) const FALLBACK_ID: usize = usize::MAX;
+
 /// A node from the lattice, that helps reconstruct the underlying `String`
 #[derive(Debug, Clone)]
 pub struct Node {

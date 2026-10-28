@@ -1,5 +1,5 @@
 use super::{
-    lattice::Lattice,
+    lattice::{FALLBACK_ID, Lattice},
     trie::{Trie, TrieBuilder},
 };
 use crate::utils::word_cache::{Lookup, WordCache};
@@ -275,8 +275,19 @@ impl Unigram {
                 }
             }
 
-            if !has_single_node && let Some(unk_id) = self.unk_id {
-                lattice.insert(begin_pos, mblen, unk_score, unk_id);
+            if !has_single_node {
+                match self.unk_id {
+                    Some(unk_id) => {
+                        lattice.insert(begin_pos, mblen, unk_score, unk_id);
+                    }
+                    // No unk id: the char itself is always an option, so the
+                    // search covers any input (script_tok's required atomic
+                    // fallback). Penalty-scored, it only wins when nothing
+                    // covers; each goes to id assignment on its own.
+                    None => {
+                        lattice.insert(begin_pos, mblen, unk_score, FALLBACK_ID);
+                    }
+                }
             }
             begin_pos += mblen
         }
@@ -472,8 +483,9 @@ impl Unigram {
         self.populate_nodes(&mut lattice);
         let path = lattice.viterbi_min_tokens();
         if path.is_empty() && !sentence.is_empty() {
-            // No unk node could cover the input; silently returning zero
-            // tokens is the worst option (MaxScore raises here).
+            // Unreachable now that every char has a fallback node, but an
+            // empty path for non-empty input must stay an error, never
+            // silent zero tokens.
             return Err(Box::new(UnigramError::MissingUnkId));
         }
         if self.fuse_unk {
@@ -481,8 +493,9 @@ impl Unigram {
             let mut token = String::new();
             for node in path.iter() {
                 let item = lattice.piece(&node.borrow());
-                // A plain comparison, not `ok_or(...)?`: with no `unk_id` no UNK
-                // node can be on the path, so there is nothing to fuse and no error.
+                // A plain comparison, not `ok_or(...)?`: only UNK nodes
+                // fuse. Fallback singles pass through one char at a time,
+                // each to id assignment on its own.
                 if Some(node.borrow().id) == self.unk_id {
                     token.push_str(&item);
                 } else {
