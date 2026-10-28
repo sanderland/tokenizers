@@ -73,10 +73,17 @@ fn write_one(out: &mut Out, normalizer: &PipelineNormalizer) -> Result<()> {
         PipelineNormalizer::Lowercase(_) => bare(out, "Lowercase"),
         PipelineNormalizer::ByteLevel(_) => bare(out, "ByteLevel"),
         #[cfg(feature = "normalizers")]
+        #[cfg(feature = "normalizers")]
+        PipelineNormalizer::Cleanup(clean) => {
+            out.obj_open();
+            out.type_tag("Cleanup");
+            out.field_bool("fold_quotes", clean.fold_quotes);
+            out.obj_close();
+        }
+        #[cfg(feature = "normalizers")]
         PipelineNormalizer::MarkBoundaries(mark) => {
             out.obj_open();
             out.type_tag("MarkBoundaries");
-            out.field_bool("fold_quotes", mark.fold_quotes);
             match mark.allcaps_min {
                 Some(min) => out.field_usize("allcaps_min", min),
                 None => out.field_null("allcaps_min"),

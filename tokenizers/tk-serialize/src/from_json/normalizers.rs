@@ -18,6 +18,7 @@ use tk_encode::tokenizer::Result;
 #[cfg(feature = "normalizers")]
 use tk_encode::normalizers::{
     bert::BertNormalizer,
+    cleanup::Cleanup,
     mark_boundaries::MarkBoundaries,
     precompiled::PrecompiledNormalizer,
     strip_accents::StripAccents,
@@ -78,6 +79,12 @@ fn push_normalizer(cfg: &Json<'_>, out: &mut Vec<PipelineNormalizer>) -> Result<
         "Lowercase" => out.push(PipelineNormalizer::Lowercase(Lowercase)),
         "ByteLevel" => out.push(PipelineNormalizer::ByteLevel(ByteLevelNormalizer)),
         #[cfg(feature = "normalizers")]
+        "Cleanup" => out.push(PipelineNormalizer::Cleanup(Cleanup::new(cfg.need(
+            &owner,
+            "fold_quotes",
+            Json::as_bool,
+        )?))),
+        #[cfg(feature = "normalizers")]
         "MarkBoundaries" => {
             let allcaps_min = cfg
                 .get("allcaps_min")
@@ -86,7 +93,6 @@ fn push_normalizer(cfg: &Json<'_>, out: &mut Vec<PipelineNormalizer>) -> Result<
                 })?
                 .as_usize();
             out.push(PipelineNormalizer::MarkBoundaries(MarkBoundaries::new(
-                cfg.need(&owner, "fold_quotes", Json::as_bool)?,
                 allcaps_min,
                 cfg.need(&owner, "frame_bow", Json::as_bool)?,
                 cfg.need(&owner, "marks_part_of_words", Json::as_bool)?,
@@ -140,7 +146,7 @@ fn push_normalizer(cfg: &Json<'_>, out: &mut Vec<PipelineNormalizer>) -> Result<
         }
         #[cfg(not(feature = "normalizers"))]
         "BertNormalizer" | "StripAccents" | "NFC" | "NFD" | "NFKC" | "NFKD" | "Nmt"
-        | "Precompiled" | "MarkBoundaries" => {
+        | "Precompiled" | "Cleanup" | "MarkBoundaries" => {
             return Err(needs_feature(
                 &format!("the `{kind}` normalizer"),
                 "normalizers",

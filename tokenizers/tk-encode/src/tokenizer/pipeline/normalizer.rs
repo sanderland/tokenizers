@@ -6,6 +6,7 @@ use std::borrow::Cow;
 #[cfg(feature = "normalizers")]
 use crate::normalizers::{
     bert::BertNormalizer,
+    cleanup::Cleanup,
     mark_boundaries::MarkBoundaries,
     precompiled::PrecompiledNormalizer,
     strip_accents::StripAccents,
@@ -35,6 +36,8 @@ pub enum PipelineNormalizer {
     ByteLevel(ByteLevelNormalizer),
     #[cfg(feature = "normalizers")]
     Bert(BertNormalizer),
+    #[cfg(feature = "normalizers")]
+    Cleanup(Cleanup),
     #[cfg(feature = "normalizers")]
     MarkBoundaries(MarkBoundaries),
     #[cfg(feature = "normalizers")]
@@ -108,6 +111,8 @@ impl Normalizer for PipelineNormalizer {
             Self::ByteLevel(normalizer) => normalizer.normalize(input, offset),
             #[cfg(feature = "normalizers")]
             Self::Bert(normalizer) => normalizer.normalize(input, offset),
+            #[cfg(feature = "normalizers")]
+            Self::Cleanup(normalizer) => normalizer.normalize(input, offset),
             #[cfg(feature = "normalizers")]
             Self::MarkBoundaries(normalizer) => normalizer.normalize(input, offset),
             #[cfg(feature = "normalizers")]

@@ -1,10 +1,16 @@
-//! Boundary-marking normalizer: text -> the marked stream.
+//! Boundary-marking normalizer: clean text -> the marked stream.
 //!
 //! // EXISTING CODE (pre-hackathon): ported from ctok/ctok/normalize.py and
 //! // ctok/ctok/constants.py. Message framing is intentionally excluded:
 //! // no trailing-newline repricing, no head-space absorption, no message
 //! // overhead. A normalizer rewrites text; it does not price messages.
 //! // Text start is treated as message start for border purposes (`frame_bow`).
+//!
+//! This is the lossless half of the pipeline: marking is invertible (a
+//! decoder can strip markers, restore seam spaces and case), unlike the
+//! lossy [`Cleanup`](super::cleanup::Cleanup) it pairs with in a `Sequence`.
+//! Input must already be clean (NFC, stripped, folded); ctok's `stream()`
+//! is `Cleanup` then this.
 //!
 //! This lives in the normalizer slot rather than with the pre-tokenizers for a
 //! mechanical reason: pipeline pre-tokenizers emit spans into the text they are
@@ -16,7 +22,6 @@
 use std::borrow::Cow;
 
 use unicode_categories::UnicodeCategories;
-use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::canonical_combining_class;
 
 use crate::{pipeline, tokenizer::Result};
@@ -56,13 +61,6 @@ const SYMBOL_LETTERS: [(u32, u32); 4] = [
 ];
 const VARIATION_SELECTORS: (u32, u32) = (0xFE00, 0xFE0F);
 const CONTRACTION_SUFFIXES: [&str; 7] = ["s", "t", "d", "m", "ll", "re", "ve"];
-// Space separators folding to U+0020 (all Zs except U+3000, plus Zl/Zp).
-// NUL folds to a space in its own step, as in ctok.
-const FUNNY_SPACES: [char; 17] = [
-    '\u{A0}', '\u{1680}', '\u{2000}', '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}',
-    '\u{2006}', '\u{2007}', '\u{2008}', '\u{2009}', '\u{200A}', '\u{2028}', '\u{2029}', '\u{202F}',
-    '\u{205F}',
-];
 // Unicode 16.0 case pairs the models know (upper -> lower).
 const NEW_CASE_PAIRS: [(char, char); 2] = [('\u{1C89}', '\u{1C8A}'), ('\u{A7CB}', '\u{264}')];
 // Uncased for the models, though Unicode calls U+03F4 a capital.
@@ -273,49 +271,6 @@ fn mark_case(span: &str, allcaps_min: Option<usize>, head_mark: bool) -> String 
         return out;
     }
     span.to_string()
-}
-
-// ---- normalization (ctok `normalize.nfc`) ----
-
-fn is_strip_control(c: char) -> bool {
-    matches!(
-        c as u32,
-        0x01..=0x08 | 0x0B..=0x1F | 0x7F | 0x80..=0x9F
-    )
-}
-
-fn nfc(text: &str, fold_quotes: bool) -> String {
-    // Rust strings cannot hold surrogates; that step is a no-op here.
-    let composed: String = text.nfc().collect();
-    let mut out: String = composed.chars().filter(|&c| !is_strip_control(c)).collect();
-    if out.contains('\0') {
-        out = out.replace('\0', " ");
-    }
-    // Thai SARA AM composes; Lao and other compatibility chars do not fold.
-    if out.contains("\u{0E4D}\u{0E32}") {
-        out = out.replace("\u{0E4D}\u{0E32}", "\u{0E33}");
-    }
-    out = out
-        .chars()
-        .filter(|&c| !(0xE000..=0xF8FF).contains(&(c as u32)))
-        .collect();
-    if fold_quotes {
-        out = out
-            .chars()
-            .map(|c| match c {
-                '\u{2018}' | '\u{2019}' => '\'',
-                '\u{201C}' | '\u{201D}' => '"',
-                _ => c,
-            })
-            .collect();
-    }
-    if out.chars().any(|c| FUNNY_SPACES.contains(&c)) {
-        out = out
-            .chars()
-            .map(|c| if FUNNY_SPACES.contains(&c) { ' ' } else { c })
-            .collect();
-    }
-    out
 }
 
 // ---- runs (ctok `normalize._runs` and its predicates) ----
@@ -538,7 +493,7 @@ fn apply_seam_law(marked: &str) -> String {
     out
 }
 
-/// Boundary-marking normalizer: rewrites text to the marked stream
+/// Boundary-marking normalizer: rewrites clean text to the marked stream
 /// (word boundaries, case and absorbed spaces as markers). The model then
 /// tiles the marked stream whole. The rules below are ctok's, measured on
 /// Claude tokenizers (see `docs/claude_boundaries.md` in the workspace).
@@ -546,12 +501,12 @@ fn apply_seam_law(marked: &str) -> String {
 /// Options select the boundary rules. The default is the fixed
 /// configuration: v3 rules with the mark-splitting bug repaired.
 /// `v3`, `v47` and `v48` reproduce ctok's measured Claude families exactly,
-/// bug included.
+/// bug included. Each pairs with a [`Cleanup`](super::cleanup::Cleanup) in
+/// a `Sequence` (`fold_quotes` true for v3, false for v4.7+); feeding raw
+/// text here skips the lossy cleanup and mis-marks it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct MarkBoundaries {
-    /// Fold curly quotes to ASCII (v3 only).
-    pub fold_quotes: bool,
     /// All-caps spans of at least this length take ⟨caps⟩; None disables.
     pub allcaps_min: Option<usize>,
     /// Text starts as if after a space (v3/v4.7; v4.8 has no frame ⟨bow⟩).
@@ -567,9 +522,9 @@ pub struct MarkBoundaries {
 
 impl Default for MarkBoundaries {
     /// v3 boundary rules with the mark-splitting bug repaired.
+    /// Pairs with `Cleanup { fold_quotes: true }`.
     fn default() -> Self {
         Self {
-            fold_quotes: true,
             allcaps_min: Some(4),
             frame_bow: true,
             marks_part_of_words: true,
@@ -578,14 +533,8 @@ impl Default for MarkBoundaries {
 }
 
 impl MarkBoundaries {
-    pub fn new(
-        fold_quotes: bool,
-        allcaps_min: Option<usize>,
-        frame_bow: bool,
-        marks_part_of_words: bool,
-    ) -> Self {
+    pub fn new(allcaps_min: Option<usize>, frame_bow: bool, marks_part_of_words: bool) -> Self {
         Self {
-            fold_quotes,
             allcaps_min,
             frame_bow,
             marks_part_of_words,
@@ -593,19 +542,19 @@ impl MarkBoundaries {
     }
 
     /// v3 boundary rules, exactly as ctok measures them on Claude (marks split words).
+    /// Pairs with `Cleanup { fold_quotes: true }`.
     pub fn v3() -> Self {
         Self {
-            fold_quotes: true,
             allcaps_min: Some(4),
             frame_bow: true,
             marks_part_of_words: false,
         }
     }
 
-    /// v4.7 boundary rules on Claude: no quote folding, no ⟨caps⟩ (marks split words).
+    /// v4.7 boundary rules on Claude: no ⟨caps⟩ (marks split words).
+    /// Pairs with `Cleanup { fold_quotes: false }`.
     pub fn v47() -> Self {
         Self {
-            fold_quotes: false,
             allcaps_min: None,
             frame_bow: true,
             marks_part_of_words: false,
@@ -613,18 +562,19 @@ impl MarkBoundaries {
     }
 
     /// v4.8 boundary rules on Claude: v4.7 without the frame ⟨bow⟩ (marks split words).
+    /// Pairs with `Cleanup { fold_quotes: false }`.
     pub fn v48() -> Self {
         Self {
-            fold_quotes: false,
             allcaps_min: None,
             frame_bow: false,
             marks_part_of_words: false,
         }
     }
 
-    /// Text -> the marked stream, in ctok's internal glyph form.
+    /// Clean text -> the marked stream, in ctok's internal glyph form.
+    /// ctok's `stream_norm` is this; its `stream` cleans first.
     pub fn marked_stream(&self, text: &str) -> String {
-        self.stream_norm(&nfc(text, self.fold_quotes))
+        self.stream_norm(text)
     }
 
     fn stream_norm(&self, norm: &str) -> String {
@@ -748,6 +698,7 @@ impl pipeline::Normalizer for MarkBoundaries {
     fn normalize<'a>(&self, input: &'a str, _offset: usize) -> Result<Cow<'a, str>> {
         // Every input is its own message: text start counts as message start
         // for border purposes regardless of where the input sits in a pair.
+        // The chain must run Cleanup first; this step marks clean text only.
         Ok(Cow::Owned(self.marked_stream(input)))
     }
 }
@@ -755,11 +706,12 @@ impl pipeline::Normalizer for MarkBoundaries {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::normalizers::Cleanup;
 
     // ctok public notation: ⟨bow⟩=BOW_G, ⟨eow⟩=EOW_G, ⟨shift⟩=SHIFT_G,
-    // ⟨caps⟩=CAPS_G. Expectations below were captured from ctok's
-    // marked_stream on inputs without framing effects (no leading space,
-    // no trailing newlines), where the normalizer must agree exactly.
+    // ⟨caps⟩=CAPS_G. Expectations below were captured from ctok's `stream`
+    // on inputs without framing effects (no leading space, no trailing
+    // newlines); the composed clean+mark pipeline must agree exactly.
     const B: &str = "\u{FDD0}";
     const E: &str = "\u{FDD1}";
     const S: &str = "\u{FDD3}";
@@ -799,9 +751,15 @@ mod tests {
 
     #[test]
     fn test_marked_stream_v3() {
+        let clean = Cleanup::new(true);
         let mark = MarkBoundaries::v3();
         for (input, expected) in v3_cases() {
-            assert_eq!(mark.marked_stream(input), expected, "input {:?}", input);
+            assert_eq!(
+                mark.marked_stream(&clean.clean(input)),
+                expected,
+                "input {:?}",
+                input
+            );
         }
     }
 
@@ -810,26 +768,26 @@ mod tests {
         // The article's three examples: Yoruba graves, Hindi viramas and the
         // Thai tone marks split words under the ctok-faithful presets but stay
         // inside under the default.
+        let clean = Cleanup::new(true);
         let fixed = MarkBoundaries::default();
         assert!(fixed.marks_part_of_words);
-        assert_eq!(fixed.marked_stream("ọ̀rọ̀"), format!("{B}ọ̀rọ̀{E}"));
-        assert_eq!(fixed.marked_stream("राष्ट्रीय"), format!("{B}राष्ट्रीय{E}"));
+        let marked = |t: &str| fixed.marked_stream(&clean.clean(t));
+        assert_eq!(marked("ọ̀rọ̀"), format!("{B}ọ̀rọ̀{E}"));
+        assert_eq!(marked("राष्ट्रीय"), format!("{B}राष्ट्रीय{E}"));
         // วันนี้ with the final U+0E49 tone mark spelled out: it is the mark
         // the bug splits off, so the literal must not lose it silently.
         assert_eq!(
-            fixed.marked_stream("ว\u{e31}นน\u{e35}\u{e49}"),
+            marked("ว\u{e31}นน\u{e35}\u{e49}"),
             format!("{B}ว\u{e31}นน\u{e35}\u{e49}{E}")
         );
 
         let buggy = MarkBoundaries::v3();
         assert!(!buggy.marks_part_of_words);
-        assert_eq!(buggy.marked_stream("ọ̀rọ̀"), format!("{B}ọ{E}̀{B}rọ{E}̀"));
+        let marked = |t: &str| buggy.marked_stream(&clean.clean(t));
+        assert_eq!(marked("ọ̀rọ̀"), format!("{B}ọ{E}̀{B}rọ{E}̀"));
+        assert_eq!(marked("राष्ट्रीय"), format!("{B}राष{E}्{B}ट{E}्{B}रीय{E}"));
         assert_eq!(
-            buggy.marked_stream("राष्ट्रीय"),
-            format!("{B}राष{E}्{B}ट{E}्{B}रीय{E}")
-        );
-        assert_eq!(
-            buggy.marked_stream("ว\u{e31}นน\u{e35}\u{e49}"),
+            marked("ว\u{e31}นน\u{e35}\u{e49}"),
             format!("{B}ว\u{e31}นน\u{e35}{E}\u{e49}")
         );
     }
@@ -838,34 +796,48 @@ mod tests {
     fn test_marks_part_of_words_keeps_vs_riding() {
         // A variation selector still rides its base in fixed mode: the emoji
         // stays one hard run, and the selector never opens a word run.
+        let clean = Cleanup::new(true);
         let fixed = MarkBoundaries::default();
-        assert_eq!(fixed.marked_stream("a✈️b"), format!("{B}a{E}✈️{B}b{E}"));
+        assert_eq!(
+            fixed.marked_stream(&clean.clean("a✈️b")),
+            format!("{B}a{E}✈️{B}b{E}")
+        );
     }
 
     #[test]
     fn test_marked_stream_v47() {
+        let clean = Cleanup::new(false);
         let mark = MarkBoundaries::v47();
-        assert_eq!(mark.marked_stream("HELLO"), format!("{B}HELLO{E}"));
+        let marked = |t: &str| mark.marked_stream(&clean.clean(t));
+        assert_eq!(marked("HELLO"), format!("{B}HELLO{E}"));
         assert_eq!(
-            mark.marked_stream("\u{201C}hi\u{201D}"),
+            marked("\u{201C}hi\u{201D}"),
             format!("{B}\u{201C}{B}hi{E}\u{201D}")
         );
-        assert_eq!(mark.marked_stream("Hello"), format!("{S}{B}hello{E}"));
-        assert_eq!(mark.marked_stream("123"), format!("{B}123"));
+        assert_eq!(marked("Hello"), format!("{S}{B}hello{E}"));
+        assert_eq!(marked("123"), format!("{B}123"));
     }
 
     #[test]
     fn test_marked_stream_v48() {
+        let clean = Cleanup::new(false);
         let mark = MarkBoundaries::v48();
-        assert_eq!(mark.marked_stream("123"), "123");
-        assert_eq!(mark.marked_stream("'tis"), format!("'{B}tis{E}"));
-        assert_eq!(mark.marked_stream("hello"), format!("{B}hello{E}"));
+        let marked = |t: &str| mark.marked_stream(&clean.clean(t));
+        assert_eq!(marked("123"), "123");
+        assert_eq!(marked("'tis"), format!("'{B}tis{E}"));
+        assert_eq!(marked("hello"), format!("{B}hello{E}"));
     }
 
     #[test]
     fn test_marked_stream_empty() {
-        assert_eq!(MarkBoundaries::default().marked_stream(""), B);
-        assert_eq!(MarkBoundaries::v48().marked_stream(""), "");
+        assert_eq!(
+            MarkBoundaries::default().marked_stream(&Cleanup::new(true).clean("")),
+            B
+        );
+        assert_eq!(
+            MarkBoundaries::v48().marked_stream(&Cleanup::new(false).clean("")),
+            ""
+        );
     }
 
     #[test]
