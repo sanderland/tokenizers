@@ -4,7 +4,8 @@
 //! // ctok/ctok/constants.py. Message framing is intentionally excluded:
 //! // no trailing-newline repricing, no head-space absorption, no message
 //! // overhead. A normalizer rewrites text; it does not price messages.
-//! // Text start is treated as message start for border purposes (`frame_bow`).
+//! // Text start is just text start: the frame (message edges, template
+//! // context) is chat templating's job, not this step's.
 //!
 //! This is the lossless half of the pipeline: marking is invertible (a
 //! decoder can strip markers, restore seam spaces and case), unlike the
@@ -500,8 +501,9 @@ fn apply_seam_law(marked: &str) -> String {
 ///
 /// Options select the boundary rules. The default is the fixed
 /// configuration: v3 rules with the mark-splitting bug repaired.
-/// `v3`, `v47` and `v48` reproduce ctok's measured Claude families exactly,
-/// bug included. Each pairs with a
+/// `v3` and `v47` reproduce ctok's measured Claude families exactly, bug
+/// included, minus the frame: text start never counts as a space and no
+/// head ⟨bow⟩ is emitted (that is chat templating). Each pairs with a
 /// [`ClaudeNormalizer`](super::claude_normalizer::ClaudeNormalizer) in a
 /// `Sequence` (`fold_quotes` true for v3, false for v4.7+); feeding raw text
 /// here skips the lossy normalization and mis-marks it.
@@ -510,8 +512,6 @@ fn apply_seam_law(marked: &str) -> String {
 pub struct MarkBoundaries {
     /// All-caps spans of at least this length take ⟨caps⟩; None disables.
     pub allcaps_min: Option<usize>,
-    /// Text starts as if after a space (v3/v4.7; v4.8 has no frame ⟨bow⟩).
-    pub frame_bow: bool,
     /// Keep combining marks inside their words. Claude instead splits words
     /// at marks without the Unicode Alphabetic property (combining accents,
     /// viramas, tone marks), so Yoruba, Hindi, Thai and friends tokenize
@@ -522,52 +522,40 @@ pub struct MarkBoundaries {
 }
 
 impl Default for MarkBoundaries {
-    /// v3 boundary rules with the mark-splitting bug repaired.
+    /// v3 boundary rules with the mark-splitting bug repaired, frameless.
     /// Pairs with `ClaudeNormalizer { fold_quotes: true }`.
     fn default() -> Self {
         Self {
             allcaps_min: Some(4),
-            frame_bow: true,
             marks_part_of_words: true,
         }
     }
 }
 
 impl MarkBoundaries {
-    pub fn new(allcaps_min: Option<usize>, frame_bow: bool, marks_part_of_words: bool) -> Self {
+    pub fn new(allcaps_min: Option<usize>, marks_part_of_words: bool) -> Self {
         Self {
             allcaps_min,
-            frame_bow,
             marks_part_of_words,
         }
     }
 
-    /// v3 boundary rules, exactly as ctok measures them on Claude (marks split words).
-    /// Pairs with `ClaudeNormalizer { fold_quotes: true }`.
+    /// v3 boundary rules, exactly as ctok measures them on Claude (marks
+    /// split words), minus the frame. Pairs with
+    /// `ClaudeNormalizer { fold_quotes: true }`.
     pub fn v3() -> Self {
         Self {
             allcaps_min: Some(4),
-            frame_bow: true,
             marks_part_of_words: false,
         }
     }
 
-    /// v4.7 boundary rules on Claude: no ⟨caps⟩ (marks split words).
+    /// v4.7 boundary rules on Claude: no ⟨caps⟩ (marks split words), minus
+    /// the frame. v4.8 marking is identical, so there is no `v48` preset.
     /// Pairs with `ClaudeNormalizer { fold_quotes: false }`.
     pub fn v47() -> Self {
         Self {
             allcaps_min: None,
-            frame_bow: true,
-            marks_part_of_words: false,
-        }
-    }
-
-    /// v4.8 boundary rules on Claude: v4.7 without the frame ⟨bow⟩ (marks split words).
-    /// Pairs with `ClaudeNormalizer { fold_quotes: false }`.
-    pub fn v48() -> Self {
-        Self {
-            allcaps_min: None,
-            frame_bow: false,
             marks_part_of_words: false,
         }
     }
@@ -593,20 +581,15 @@ impl MarkBoundaries {
 
         let runs = split_runs(&norm, self.marks_part_of_words);
         if runs.is_empty() {
-            return if self.frame_bow {
-                BOW_G.to_string()
-            } else {
-                String::new()
-            };
+            return String::new();
         }
         let n_runs = runs.len();
 
         let borders_space = |i: usize, side: i32| -> bool {
             let j = i as i32 + side;
-            if j < 0 {
-                return self.frame_bow;
-            }
-            if j >= n_runs as i32 {
+            // Neither edge ever counts as a space: the frame is chat
+            // templating's, not this step's.
+            if j < 0 || j >= n_runs as i32 {
                 return false;
             }
             let (cls, body) = &runs[j as usize];
@@ -622,20 +605,7 @@ impl MarkBoundaries {
             chars.next() == Some(' ') && chars.next() != Some(' ')
         };
 
-        let first = &runs[0];
-        let head_quote = opens_word(&runs, 0);
-        let has_own_bow = !head_quote
-            && (matches!(first.0, Class::Wordy | Class::Punct | Class::StrayMark)
-                || hard_bow(&first.1)
-                || (matches!(first.0, Class::Digit | Class::Hard) && digit_bow(&first.1))
-                || (first.0 == Class::Space && first.1.starts_with(' ')));
-        let mut out: Vec<String> = if has_own_bow || !self.frame_bow {
-            vec![]
-        } else if head_quote {
-            vec![" ".to_string()]
-        } else {
-            vec![BOW_G.to_string()]
-        };
+        let mut out: Vec<String> = vec![];
 
         for (i, (cls, body)) in runs.iter().enumerate() {
             match cls {
@@ -728,24 +698,24 @@ mod tests {
             ("a! b", format!("{B}a{E}!{E}{B}b{E}")),
             ("hello world", format!("{B}hello{E}{B}world{E}")),
             ("it's", format!("{B}it{E}'s{E}")),
-            ("123", format!("{B}123")),
-            ("123 456", format!("{B}123 456")),
+            ("123", "123".to_string()),
+            ("123 456", "123 456".to_string()),
             ("a  b", format!("{B}a{E}  {B}b{E}")),
             ("don't stop", format!("{B}don{E}'t{E}{B}stop{E}")),
             ("NASA", format!("{C}{B}nasa{E}")),
             ("WiFi", format!("{B}WiFi{E}")),
             ("can't", format!("{B}can{E}'t{E}")),
-            ("'tis", format!(" '{B}tis{E}")),
+            ("'tis", format!("'{B}tis{E}")),
             ("x 'REXX", format!("{B}x{E} '{C}{B}rexx{E}")),
             ("a,b", format!("{B}a{E},{B}b{E}")),
-            ("1,000", format!("{B}1,000")),
+            ("1,000", "1,000".to_string()),
             ("e.g.", format!("{B}e{E}.{B}g{E}.")),
             ("Café", format!("{S}{B}café{E}")),
             ("Σίσυφος", format!("{S}{B}σίσυφος{E}")),
             ("ΟΔΥΣΣΕΥΣ", format!("{C}{B}οδυσσευσ{E}")),
             ("Straße", format!("{S}{B}straße{E}")),
             ("ẞtest", format!("{B}ẞtest{E}")),
-            ("\u{201C}hi\u{201D}", format!("{B}\"{B}hi{E}\"")),
+            ("\u{201C}hi\u{201D}", format!("\"{B}hi{E}\"")),
             ("a'b", format!("{B}a{E}'{B}b{E}")),
         ]
     }
@@ -807,36 +777,26 @@ mod tests {
 
     #[test]
     fn test_marked_stream_v47() {
+        // Frameless: text start never counts as a space and no head ⟨bow⟩
+        // is emitted (that is chat templating). v4.8 marking is identical.
         let clean = ClaudeNormalizer::new(false);
         let mark = MarkBoundaries::v47();
         let marked = |t: &str| mark.marked_stream(&clean.clean(t));
         assert_eq!(marked("HELLO"), format!("{B}HELLO{E}"));
         assert_eq!(
             marked("\u{201C}hi\u{201D}"),
-            format!("{B}\u{201C}{B}hi{E}\u{201D}")
+            format!("\u{201C}{B}hi{E}\u{201D}")
         );
         assert_eq!(marked("Hello"), format!("{S}{B}hello{E}"));
-        assert_eq!(marked("123"), format!("{B}123"));
-    }
-
-    #[test]
-    fn test_marked_stream_v48() {
-        let clean = ClaudeNormalizer::new(false);
-        let mark = MarkBoundaries::v48();
-        let marked = |t: &str| mark.marked_stream(&clean.clean(t));
         assert_eq!(marked("123"), "123");
         assert_eq!(marked("'tis"), format!("'{B}tis{E}"));
-        assert_eq!(marked("hello"), format!("{B}hello{E}"));
+        assert_eq!(marked(" a"), format!(" {B}a{E}"));
     }
 
     #[test]
     fn test_marked_stream_empty() {
         assert_eq!(
             MarkBoundaries::default().marked_stream(&ClaudeNormalizer::new(true).clean("")),
-            B
-        );
-        assert_eq!(
-            MarkBoundaries::v48().marked_stream(&ClaudeNormalizer::new(false).clean("")),
             ""
         );
     }

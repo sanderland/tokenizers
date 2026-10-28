@@ -92,7 +92,6 @@ fn push_normalizer(cfg: &Json<'_>, out: &mut Vec<PipelineNormalizer>) -> Result<
                 .as_usize();
             out.push(PipelineNormalizer::MarkBoundaries(MarkBoundaries::new(
                 allcaps_min,
-                cfg.need(&owner, "frame_bow", Json::as_bool)?,
                 cfg.need(&owner, "marks_part_of_words", Json::as_bool)?,
             )));
         }
