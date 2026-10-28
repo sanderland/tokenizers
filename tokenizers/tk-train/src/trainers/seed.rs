@@ -12,7 +12,6 @@ use crate::trainers::unigram::UnigramTrainerError;
 use ahash::{AHashMap, AHashSet};
 #[cfg(feature = "bpe")]
 use compact_str::CompactString;
-use log::debug;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use tk_encode::Result;
@@ -291,9 +290,6 @@ pub(crate) fn finalize(
     required_chars: AHashSet<String>,
     byte_prefixes: bool,
 ) -> Result<Unigram> {
-    if byte_prefixes && unk_token.is_none() {
-        debug!("byte floor on without unk_token: uncoverable input encodes to nothing");
-    }
     let mut min_score_penalty = 0.0;
     let min_score_penalty_delta = 0.0001;
 

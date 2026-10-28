@@ -124,8 +124,8 @@ impl UnigramTrainerBuilder {
 
     /// Emit `<0x..>` byte pieces (256 singles plus observed multibyte
     /// prefixes) so inference can tile uncovered bytes: ctok's byte floor.
-    /// Pairs with `unk_token`: unknown spans reach the floor through UNK
-    /// nodes, so without one uncoverable input still encodes to nothing.
+    /// Coverage needs no `unk_token`: uncovered chars fall back to single
+    /// chars in the search and tile through the floor one at a time.
     pub fn byte_prefixes(&mut self, byte_prefixes: bool) -> &mut Self {
         self.byte_prefixes = Some(byte_prefixes);
         self

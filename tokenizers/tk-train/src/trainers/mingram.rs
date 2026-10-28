@@ -125,8 +125,8 @@ impl MinGramTrainerBuilder {
 
     /// Emit `<0x..>` byte pieces (256 singles plus observed multibyte
     /// prefixes) so inference can tile uncovered bytes: ctok's byte floor.
-    /// Pairs with `unk_token`: unknown spans reach the floor through UNK
-    /// nodes, so without one uncoverable input still encodes to nothing.
+    /// Coverage needs no `unk_token`: uncovered chars fall back to single
+    /// chars in the search and tile through the floor one at a time.
     pub fn byte_prefixes(&mut self, byte_prefixes: bool) -> &mut Self {
         self.byte_prefixes = Some(byte_prefixes);
         self
@@ -498,7 +498,11 @@ impl MinGramTrainer {
                     let path = lattice.viterbi_min_tokens();
                     for node_ref in &path {
                         let id = node_ref.borrow().id;
-                        expected[id] += *freq as f64;
+                        // Fallback nodes have no vocab slot; like UNK mass
+                        // (dropped from the total below) they count nowhere.
+                        if id < expected.len() {
+                            expected[id] += *freq as f64;
+                        }
                     }
                     ntokens += path.len() as u32;
                 }
@@ -521,8 +525,7 @@ impl MinGramTrainer {
 
     /// M-step: drop pieces with negligible expected counts and re-estimate
     /// plain MLE log-probs (no Bayesian prior). Single chars are the
-    /// alphabet and never drop: a missing one routes its characters through
-    /// UNK for the rest of training, and MI then skips those words.
+    /// alphabet and never drop (floored at 0.5 for scoring).
     fn run_m_step(&self, pieces: &[SentencePiece], expected: &[f64]) -> Vec<SentencePiece> {
         if pieces.len() != expected.len() {
             panic!(
@@ -790,6 +793,17 @@ mod tests {
         let (ntokens, expected) = trainer.run_e_step(&model, &[("ab".to_string(), 3)]);
         assert_eq!(ntokens, 1);
         assert_eq!(expected, vec![0.0, 0.0, 0.0, 3.0]);
+    }
+
+    #[test]
+    fn test_e_step_skips_fallback_without_panicking() {
+        // A no-unk model on an unseen char: the fallback node has no vocab
+        // slot, so it counts nowhere instead of indexing out of bounds.
+        let model = Unigram::from(vec![("a".into(), 0.0)], None, false).unwrap();
+        let trainer = MinGramTrainer::builder().build().unwrap();
+        let (ntokens, expected) = trainer.run_e_step(&model, &[("z".to_string(), 3)]);
+        assert_eq!(ntokens, 1);
+        assert_eq!(expected, vec![0.0]);
     }
 
     #[test]
