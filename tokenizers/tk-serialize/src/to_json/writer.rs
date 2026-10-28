@@ -216,34 +216,58 @@ pub(super) fn escape_into(out: &mut String, value: &str) {
 const MAX_PRECISION: usize = 17;
 
 #[cfg(any(feature = "unigram", test))]
+/// ULP distance between two finite doubles of the same sign.
+pub(super) fn ulp_distance(a: f64, b: f64) -> u64 {
+    (a.to_bits() as i64 - b.to_bits() as i64).unsigned_abs()
+}
+
 /// A float spelled so that *this crate's own parser* reads it back to the identical bits.
 ///
 /// The usual "shortest form that round-trips" rule is defined against a correctly-rounded parser,
 /// and [`crate::vendored`]'s deliberately is not one -- it reproduces `serde_json`'s arithmetic, so
 /// it can land a ULP off. The shortest form is therefore a candidate, checked through the same
-/// `f64_from_literal` the reader uses; the precision ladder is the fallback and has never fired on
-/// real data.
+/// `f64_from_literal` the reader uses; the ladders vary the (significand, exponent) split for fresh
+/// landing chances through the parser's two roundings. A few doubles land off-bits under every
+/// spelling; those keep the closest one (about a ULP) rather than refusing to write, since every
+/// other reader parses the spelling correctly and a file beats an error.
 pub(super) fn float_literal(value: f64) -> Result<String> {
     if !value.is_finite() {
         return Err(format!("cannot write the non-finite number {value:?} as JSON").into());
     }
     let shortest = keep_it_a_float(value.to_string());
-    if f64_from_literal(&shortest).to_bits() == value.to_bits() {
-        return Ok(shortest);
+    let mut best = (ulp_distance(f64_from_literal(&shortest), value), shortest);
+    if best.0 == 0 {
+        return Ok(best.1);
     }
     for precision in 0..=MAX_PRECISION {
-        let candidate = format!("{value:.precision$e}");
-        if f64_from_literal(&candidate).to_bits() == value.to_bits() {
-            return Ok(candidate);
+        best = consider(value, best, format!("{value:.precision$e}"));
+        if best.0 == 0 {
+            return Ok(best.1);
         }
     }
-    Err(format!(
-        "no decimal spelling of {value:?} ({:016x}) reads back to the same bits through this \
-         crate's parser: tried the shortest form and {} precisions",
-        value.to_bits(),
-        MAX_PRECISION + 1
-    )
-    .into())
+    for precision in 15..=30 {
+        best = consider(value, best, format!("{value:.precision$}"));
+        if best.0 == 0 {
+            return Ok(best.1);
+        }
+    }
+    let (distance, spelling) = best;
+    debug_assert!(
+        distance <= 2,
+        "no spelling of {value:?} lands within 2 ULP: {spelling}"
+    );
+    Ok(spelling)
+}
+
+/// Keep whichever of the incumbent spelling and `candidate` reads back closer
+/// to `value` through our own parser.
+fn consider(value: f64, best: (u64, String), candidate: String) -> (u64, String) {
+    let distance = ulp_distance(f64_from_literal(&candidate), value);
+    if distance < best.0 {
+        (distance, candidate)
+    } else {
+        best
+    }
 }
 
 #[cfg(any(feature = "unigram", test))]

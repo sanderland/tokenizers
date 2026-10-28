@@ -464,6 +464,32 @@ fn floats_round_trip_through_our_own_parser() {
 }
 
 #[test]
+fn unwritable_doubles_keep_a_close_spelling() {
+    // Real MinGram MLE scores that land off-bits under every spelling through
+    // our parser: the writer keeps the closest one instead of refusing.
+    for value in [
+        f64::from_bits(0xc00948c95351d6ff),
+        f64::from_bits(0xbfeecb7214223d40),
+    ] {
+        let literal = float_literal(value).expect("every finite float has a spelling");
+        let distance = ulp_distance(reads_back_as(&literal), value);
+        assert!(distance <= 2, "{value:?} lands {distance} ULP off");
+    }
+}
+
+#[test]
+fn mle_like_scores_all_have_close_spellings() {
+    for total in [1e3f64, 1e6, 1e9] {
+        for count in 1..500 {
+            let value = (count as f64).ln() - total.ln();
+            let literal = float_literal(value).expect("every finite float has a spelling");
+            let distance = ulp_distance(reads_back_as(&literal), value);
+            assert!(distance <= 2, "{value:?} lands {distance} ULP off");
+        }
+    }
+}
+
+#[test]
 fn non_finite_numbers_are_refused_rather_than_mangled() {
     for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert!(float_literal(value).is_err(), "{value:?} has no JSON form");
