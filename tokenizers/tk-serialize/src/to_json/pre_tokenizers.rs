@@ -49,6 +49,7 @@ fn write_one(out: &mut Out, pretok: &PipelinePreTokenizer) -> Result<()> {
         }
         PipelinePreTokenizer::Whitespace(_) => bare(out, "Whitespace"),
         PipelinePreTokenizer::WhitespaceSplit(_) => bare(out, "WhitespaceSplit"),
+        PipelinePreTokenizer::MarkSplit(_) => bare(out, "MarkSplit"),
         PipelinePreTokenizer::Bert(_) => bare(out, "BertPreTokenizer"),
         #[cfg(feature = "unicode-scripts")]
         PipelinePreTokenizer::UnicodeScripts(_) => bare(out, "UnicodeScripts"),

@@ -9,6 +9,7 @@ use tk_encode::pre_tokenizers::bert::BertPreTokenizer;
 use tk_encode::pre_tokenizers::delimiter::CharDelimiterSplit;
 use tk_encode::pre_tokenizers::digits::Digits;
 use tk_encode::pre_tokenizers::fixed_length::FixedLength;
+use tk_encode::pre_tokenizers::mark_split::MarkSplit;
 use tk_encode::pre_tokenizers::punctuation::Punctuation;
 use tk_encode::pre_tokenizers::sequence::PipelineSequence;
 use tk_encode::pre_tokenizers::split::{Split as SplitPretok, SplitPattern};
@@ -55,6 +56,7 @@ fn read_one_pre_tokenizer(cfg: &Json<'_>) -> Result<PipelinePreTokenizer> {
         "Split" => PipelinePreTokenizer::Split(read_split(cfg)?),
         "Whitespace" => PipelinePreTokenizer::Whitespace(Whitespace),
         "WhitespaceSplit" => PipelinePreTokenizer::WhitespaceSplit(WhitespaceSplit),
+        "MarkSplit" => PipelinePreTokenizer::MarkSplit(MarkSplit),
         "BertPreTokenizer" => PipelinePreTokenizer::Bert(BertPreTokenizer),
         #[cfg(feature = "unicode-scripts")]
         "UnicodeScripts" => PipelinePreTokenizer::UnicodeScripts(UnicodeScripts::new()),

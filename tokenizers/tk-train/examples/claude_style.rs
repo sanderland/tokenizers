@@ -1,16 +1,18 @@
 //! Train a Claude-style tokenizer, then improve on it.
 //!
-//! Training sees the same marked words inference tiles: each corpus line is
-//! cleaned, marked, and split into marked words, and the trainer learns
-//! marked pieces. Two configs share the recipe and differ in one flag:
+//! Training sees the same pre-token spans inference tiles: each corpus line
+//! is cleaned, marked, and split with `MarkSplit`, and the trainer learns
+//! marked pieces that never cross a boundary mark. Two configs share the
+//! recipe and differ in one flag:
 //!
 //! - v4.7-faithful (`marks_part_of_words: false`): marks split words, as
 //!   Claude does (the mark-breaking bug).
 //! - fixed (`marks_part_of_words: true`): marks stay inside their words.
 //!
 //! Newer (v4.7+) boundaries only: `ClaudeNormalizer { fold_quotes: false }`
-//! plus `MarkBoundaries::v47`, with an empty pre-tokenizer slot. Framing
-//! (message pads, head-space absorption) is chat templating, not shown here.
+//! plus `MarkBoundaries::v47` plus `MarkSplit`, with the byte floor always
+//! on. Framing (message pads, head-space absorption) is chat templating,
+//! not shown here.
 //!
 //! Run with:
 //!
@@ -28,6 +30,7 @@ use tk_encode::pipeline::{
     EncodeOptions, PipelineModel, PipelineNormalizer, PipelinePostProcessor, PipelinePreTokenizer,
     PipelineToken, PipelineTokenizer,
 };
+use tk_encode::pre_tokenizers::mark_split::MarkSplit;
 use tk_encode::vocab::bucket_added_vocabulary::AddedVocabulary;
 use tk_train::trainers::{MinGramTrainer, SeedInit};
 
@@ -58,25 +61,32 @@ fn corpus() -> Vec<(String, u32)> {
     .collect()
 }
 
-/// Training sentences: cleaned and marked whole, exactly what inference
-/// tiles.
+/// Training sentences: cleaned, marked, and split into pre-token spans.
+/// Seeding and EM see spans, not whole lines, so no learned piece ever
+/// crosses a boundary mark; inference runs the same split before the
+/// lattice. Each span inherits its line's count.
 fn marked_sentences(marking: &MarkBoundaries) -> Vec<(String, u32)> {
     let cleanup = ClaudeNormalizer::new(false);
-    corpus()
-        .into_iter()
-        .map(|(line, count)| (marking.marked_stream(&cleanup.clean(&line)), count))
-        .filter(|(marked, _)| !marked.is_empty())
-        .collect()
+    let splitter = MarkSplit;
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    for (line, count) in corpus() {
+        let marked = marking.marked_stream(&cleanup.clean(&line));
+        for (s, e) in splitter.split(&marked) {
+            *counts
+                .entry(marked[s as usize..e as usize].to_string())
+                .or_default() += count;
+        }
+    }
+    counts.into_iter().collect()
 }
 
 fn train(marking: &MarkBoundaries) -> Result<Unigram, Box<dyn Error + Send + Sync>> {
     let trainer = MinGramTrainer::builder()
         .show_progress(false)
-        .vocab_size(80)
+        .vocab_size(400)
         .seed_size(500)
         .seed_init(SeedInit::Bpe)
         .unk_token(Some("<unk>".into()))
-        .byte_prefixes(true)
         .build()
         .unwrap();
     let mut model = Unigram::default();
@@ -91,7 +101,7 @@ fn pipeline_for(model: Unigram, marking: MarkBoundaries) -> PipelineTokenizer {
             PipelineNormalizer::ClaudeNormalizer(ClaudeNormalizer::new(false)),
             PipelineNormalizer::MarkBoundaries(marking),
         ],
-        PipelinePreTokenizer::None,
+        PipelinePreTokenizer::MarkSplit(MarkSplit),
         PipelineModel::Unigram(model),
         PipelinePostProcessor::default(),
         Some(DecoderRuntime::Unmark(Unmark::new())),
