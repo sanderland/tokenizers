@@ -1,9 +1,10 @@
 //! MinGram ("Minimalist Unigram") trainer: BPE-seeded hard-EM training that
 //! outputs a standard `Unigram` model with `objective = min_tokens`.
 //!
-//! Seed -> hard EM (minimum-token-count E-step, MLE M-step) -> one flat
-//! score prune -> shared finalize. No forward-backward pass, no iterative
-//! prune loop.
+//! Seed -> outer EM/prune loop (one shrink step by default, matching
+//! script_tok's default schedule) -> shared finalize. No forward-backward
+//! pass. Pruning drops the least-used pieces by default, with an optional
+//! minimum-increase port of script_tok's `_mi_prune.py`.
 
 use super::seed::{self, SeedInit, Sentence, SentencePiece};
 use super::unigram::UnigramTrainerError;
@@ -22,6 +23,17 @@ use tk_encode::models::unigram::{
 use tk_encode::utils::parallelism::*;
 use tk_encode::vocab::bucket_added_vocabulary::AddedToken;
 
+/// What a prune round drops: the least-used pieces (default), or the pieces
+/// whose removal adds the fewest extra corpus tokens (minimum-increase,
+/// Schmidt et al. 2024, ported from `script_tok/.../_mi_prune.py`, where it
+/// is shared with PathPiece).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PruneCriterion {
+    #[default]
+    UsageCount,
+    MinimumIncrease,
+}
+
 /// A `MinGramTrainer` trains a `Unigram` model from `word_counts` with hard EM.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +51,9 @@ pub struct MinGramTrainer {
     seed_size: usize,
     pub seed_init: SeedInit,
     pub byte_prefixes: bool,
+    pub prune_criterion: PruneCriterion,
+    pub pruning_shrinking_factor: f64,
+    pub skip_substring_in_batch: bool,
     words: AHashMap<String, u32>,
 }
 
@@ -56,6 +71,9 @@ pub struct MinGramTrainerBuilder {
     seed_size: Option<usize>,
     seed_init: Option<SeedInit>,
     byte_prefixes: Option<bool>,
+    prune_criterion: Option<PruneCriterion>,
+    pruning_shrinking_factor: Option<f64>,
+    skip_substring_in_batch: Option<bool>,
     words: Option<AHashMap<String, u32>>,
 }
 
@@ -112,6 +130,28 @@ impl MinGramTrainerBuilder {
         self
     }
 
+    /// Prune the least-used pieces (default) or minimum-increase. MI pairs
+    /// best with iterative pruning (`pruning_shrinking_factor` above 0).
+    pub fn prune_criterion(&mut self, prune_criterion: PruneCriterion) -> &mut Self {
+        self.prune_criterion = Some(prune_criterion);
+        self
+    }
+
+    /// Shrink step per outer round: 0 prunes to the final size in one step
+    /// (matching script_tok's default schedule); above 0 the prune is
+    /// gradual and each round re-runs the EM sub-iterations.
+    pub fn pruning_shrinking_factor(&mut self, pruning_shrinking_factor: f64) -> &mut Self {
+        self.pruning_shrinking_factor = Some(pruning_shrinking_factor);
+        self
+    }
+
+    /// In an MI drop batch, skip a candidate contained in an already-dropped
+    /// token. MI pruning only; ignored under usage-count pruning.
+    pub fn skip_substring_in_batch(&mut self, skip_substring_in_batch: bool) -> &mut Self {
+        self.skip_substring_in_batch = Some(skip_substring_in_batch);
+        self
+    }
+
     pub fn words(&mut self, words: AHashMap<String, u32>) -> &mut Self {
         self.words = Some(words);
         self
@@ -129,6 +169,9 @@ impl MinGramTrainerBuilder {
             seed_size: self.seed_size.unwrap_or(1_000_000),
             seed_init: self.seed_init.unwrap_or(SeedInit::Bpe),
             byte_prefixes: self.byte_prefixes.unwrap_or(false),
+            prune_criterion: self.prune_criterion.unwrap_or_default(),
+            pruning_shrinking_factor: self.pruning_shrinking_factor.unwrap_or(0.0),
+            skip_substring_in_batch: self.skip_substring_in_batch.unwrap_or(true),
             words: self.words.clone().unwrap_or_default(),
         })
     }
@@ -167,7 +210,238 @@ fn flat_prune(pieces: &[SentencePiece], target_size: usize) -> Vec<SentencePiece
     kept
 }
 
+/// Char-trie over training pieces for MI match enumeration. The Unigram
+/// byte-trie is crate-private and byte-indexed; MI needs char-indexed
+/// matches, so a small dedicated trie is simpler than reaching in.
+struct CharTrie {
+    children: Vec<AHashMap<char, usize>>,
+    terminal: Vec<Option<usize>>,
+}
+
+impl CharTrie {
+    fn build(pieces: &[SentencePiece]) -> Self {
+        let mut trie = Self {
+            children: vec![AHashMap::new()],
+            terminal: vec![None],
+        };
+        for (idx, (piece, _)) in pieces.iter().enumerate().skip(1) {
+            let mut node = 0;
+            for c in piece.chars() {
+                if let Some(&next) = trie.children[node].get(&c) {
+                    node = next;
+                } else {
+                    let next = trie.children.len();
+                    trie.children.push(AHashMap::new());
+                    trie.terminal.push(None);
+                    trie.children[node].insert(c, next);
+                    node = next;
+                }
+            }
+            trie.terminal[node] = Some(idx);
+        }
+        trie
+    }
+
+    /// `(char_len, piece_idx)` of every piece matching a prefix of `chars`,
+    /// shortest first.
+    fn matches(&self, chars: &[char]) -> Vec<(usize, usize)> {
+        let mut out = vec![];
+        let mut node = 0;
+        for (i, c) in chars.iter().enumerate() {
+            match self.children[node].get(c) {
+                Some(&next) => {
+                    node = next;
+                    if let Some(idx) = self.terminal[node] {
+                        out.push((i + 1, idx));
+                    }
+                }
+                None => break,
+            }
+        }
+        out
+    }
+}
+
+/// Minimum-increase lower bound per piece: how many extra corpus tokens
+/// dropping the piece would add. Ported from `script_tok/.../_mi_prune.py`
+/// (Schmidt et al. 2024 section 3.2): for each occurrence in the model's own
+/// segmentation, the cheaper of re-tiling across one internal break or
+/// replacing the piece with a strictly larger match covering it. Indexed by
+/// piece; the UNK slot and the required singles keep 0.0.
+fn compute_mi_table(pieces: &[SentencePiece], sentences: &[Sentence], model: &Unigram) -> Vec<f64> {
+    let trie = CharTrie::build(pieces);
+    let max_width = pieces[1..]
+        .iter()
+        .map(|(piece, _)| piece.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut mi = vec![0.0; pieces.len()];
+    for (word, freq) in sentences {
+        let chars: Vec<char> = word.chars().collect();
+        let n = chars.len();
+        if n == 0 {
+            continue;
+        }
+        let unreachable = n + 1;
+        // Forward min-path lengths plus every match ending at each position.
+        let mut pl = vec![unreachable; n + 1];
+        pl[0] = 0;
+        let mut ending_at: Vec<Vec<(usize, usize)>> = vec![vec![]; n + 1];
+        for s in 0..n {
+            let base = pl[s];
+            for (w, idx) in trie.matches(&chars[s..]) {
+                let e = s + w;
+                ending_at[e].push((w, idx));
+                if base < unreachable && base + 1 < pl[e] {
+                    pl[e] = base + 1;
+                }
+            }
+        }
+        let k_d = pl[n];
+        if k_d >= unreachable {
+            continue;
+        }
+        // Backward min-path lengths.
+        let mut bpl = vec![unreachable; n + 1];
+        bpl[n] = 0;
+        for e in (0..n).rev() {
+            let mut best = unreachable;
+            for (w, _) in trie.matches(&chars[e..]) {
+                let cand = bpl[e + w];
+                if cand < unreachable && cand + 1 < best {
+                    best = cand + 1;
+                }
+            }
+            bpl[e] = best;
+        }
+        // The model's own segmentation into char ranges; words it cannot
+        // cover without UNK are skipped (impossible while the M-step keeps
+        // every observed single).
+        let mut lattice = Lattice::from(word, model.bos_id, model.eos_id);
+        model.populate_nodes(&mut lattice);
+        let path = lattice.viterbi_min_tokens();
+        let mut ranges: Vec<(usize, usize, usize)> = vec![];
+        let mut pos = 0;
+        let mut usable = true;
+        for node_ref in &path {
+            let id = node_ref.borrow().id;
+            if id == 0 || id >= pieces.len() {
+                usable = false;
+                break;
+            }
+            let w = pieces[id].0.chars().count();
+            ranges.push((pos, pos + w, id));
+            pos += w;
+        }
+        if !usable || pos != n {
+            continue;
+        }
+        for (s, e, idx) in ranges {
+            if e - s == 1 {
+                continue; // required singles are never pruned
+            }
+            let mut best_break = unreachable;
+            for j in s + 1..e {
+                best_break = best_break.min(pl[j] + bpl[j]);
+            }
+            let mi_b = best_break - k_d;
+            let mut mi_s = unreachable;
+            for ep in e..(s + max_width).min(n) + 1 {
+                for &(w_prime, _) in &ending_at[ep] {
+                    let sp = ep - w_prime;
+                    if sp > s || (sp == s && ep == e) {
+                        continue;
+                    }
+                    mi_s = mi_s.min(pl[sp] + bpl[ep] + 1);
+                }
+            }
+            mi_s -= k_d;
+            let local_mi = mi_b.min(mi_s);
+            let local = if local_mi >= unreachable {
+                f64::INFINITY
+            } else {
+                local_mi as f64
+            };
+            mi[idx] += *freq as f64 * local;
+        }
+    }
+    mi
+}
+
+/// Drop batch used by MI pruning: the first `k` candidates in MI order,
+/// skipping a candidate already contained in a dropped token when
+/// `skip_substring` holds (script_tok `_mi_prune.select_drop_batch`).
+fn select_drop_batch(
+    ordered_ids: &[usize],
+    k: usize,
+    pieces: &[SentencePiece],
+    skip_substring: bool,
+) -> AHashSet<usize> {
+    const MAX_SUB_LEN: usize = 16;
+    if !skip_substring {
+        return ordered_ids.iter().take(k).copied().collect();
+    }
+    let mut dropped = AHashSet::new();
+    let mut sub_seqs: AHashSet<Vec<char>> = AHashSet::new();
+    for &idx in ordered_ids {
+        if dropped.len() >= k {
+            break;
+        }
+        let seq: Vec<char> = pieces[idx].0.chars().collect();
+        if seq.len() <= MAX_SUB_LEN && sub_seqs.contains(&seq) {
+            continue;
+        }
+        dropped.insert(idx);
+        for i in 0..seq.len() {
+            for j in i + 1..=(i + MAX_SUB_LEN).min(seq.len()) {
+                sub_seqs.insert(seq[i..j].to_vec());
+            }
+        }
+    }
+    dropped
+}
+
+/// Drop down to `target_size` by minimum increase, lowest first, breaking
+/// ties by current usage score (script_tok `_mi_prune.mi_prune`). UNK and
+/// the observed singles are kept unconditionally.
+fn mi_prune(
+    pieces: &[SentencePiece],
+    sentences: &[Sentence],
+    model: &Unigram,
+    target_size: usize,
+    skip_substring: bool,
+) -> Vec<SentencePiece> {
+    let n_required = 1 + pieces[1..]
+        .iter()
+        .filter(|(piece, _)| piece.chars().count() == 1)
+        .count();
+    let n_remove = (pieces.len().saturating_sub(target_size)).min(pieces.len() - n_required);
+    if n_remove == 0 {
+        return pieces.to_vec();
+    }
+    let mi = compute_mi_table(pieces, sentences, model);
+    let mut candidates: Vec<usize> = (1..pieces.len())
+        .filter(|&i| pieces[i].0.chars().count() != 1)
+        .collect();
+    candidates.sort_by(|&a, &b| {
+        mi[a]
+            .partial_cmp(&mi[b])
+            .unwrap()
+            .then(pieces[a].1.partial_cmp(&pieces[b].1).unwrap())
+    });
+    let drop = select_drop_batch(&candidates, n_remove, pieces, skip_substring);
+    pieces
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !drop.contains(i))
+        .map(|(_, piece)| piece.clone())
+        .collect()
+}
+
 impl MinGramTrainer {
+    /// Outer-loop cap, mirroring script_tok's `MAX_ITERATIONS`.
+    const MAX_ITERATIONS: usize = 100;
+
     pub fn builder() -> MinGramTrainerBuilder {
         MinGramTrainerBuilder::default()
     }
@@ -278,6 +552,40 @@ impl MinGramTrainer {
             .collect()
     }
 
+    /// Prune to `target_size` under the configured criterion (MI pruning
+    /// needs the current model for the segmentation its bounds are built on).
+    fn prune_to_target(
+        &self,
+        pieces: &[SentencePiece],
+        sentences: &[Sentence],
+        model: &Unigram,
+        target_size: usize,
+    ) -> Vec<SentencePiece> {
+        match self.prune_criterion {
+            PruneCriterion::UsageCount => flat_prune(pieces, target_size),
+            PruneCriterion::MinimumIncrease => mi_prune(
+                pieces,
+                sentences,
+                model,
+                target_size,
+                self.skip_substring_in_batch,
+            ),
+        }
+    }
+
+    /// Outer shrink step (script_tok `prune_tokens`): with a zero factor the
+    /// target is the final size, so one outer round prunes everything and a
+    /// second re-estimates on it; above zero the prune shrinks gradually.
+    fn shrink_target(&self, pieces: &[SentencePiece], final_size: usize) -> usize {
+        let n_singles = pieces[1..]
+            .iter()
+            .filter(|(piece, _)| piece.chars().count() == 1)
+            .count();
+        let non_atomic = pieces.len() - 1 - n_singles;
+        let shrink_n = (non_atomic as f64 * (1.0 - self.pruning_shrinking_factor)) as usize;
+        final_size.max(non_atomic.saturating_sub(shrink_n))
+    }
+
     /// Re-estimate MLE log-probs for a fixed piece list by hard EM: segment
     /// the sentences on min-token paths and normalize the counts. Nothing is
     /// pruned, so the output aligns with the input pieces; unseen pieces floor
@@ -344,29 +652,46 @@ impl MinGramTrainer {
             return Err(Box::new(UnigramTrainerError::VocabularyTooSmall));
         }
 
-        // 2. Run hard EM.
-        let expected_updates = self.n_sub_iterations as usize;
+        // 2. Outer EM/prune loop (script_tok schedule): EM sub-iterations,
+        // break at size, shrink-step prune. A zero shrinking factor prunes
+        // to the final size in the first round and re-estimates once more;
+        // above zero the bar pins early and further rounds run past it.
+        let final_size = self.vocab_size as usize;
+        let expected_updates = self.n_sub_iterations as usize * 2;
         self.update_progress(&progress, expected_updates, "Hard EM training");
         let mut new_model = Unigram::from(pieces.clone(), Some(0), false)?;
-        for _iter in 0..self.n_sub_iterations {
-            let (num_tokens, expected) = self.run_e_step(&new_model, &sentences);
-            pieces = self.run_m_step(&pieces, &expected);
-            new_model = Unigram::from(pieces.clone(), Some(0), false)?;
+        for outer in 0..Self::MAX_ITERATIONS {
+            for _iter in 0..self.n_sub_iterations {
+                let (num_tokens, expected) = self.run_e_step(&new_model, &sentences);
+                pieces = self.run_m_step(&pieces, &expected);
+                new_model = Unigram::from(pieces.clone(), Some(0), false)?;
 
-            debug!(
-                "Hard EM iter={} size={} num_tokens={}",
-                _iter,
-                new_model.len(),
-                num_tokens,
-            );
-            if let Some(p) = &progress {
-                p.inc(1);
+                debug!(
+                    "Hard EM outer={} iter={} size={} num_tokens={}",
+                    outer,
+                    _iter,
+                    new_model.len(),
+                    num_tokens,
+                );
+                if let Some(p) = &progress {
+                    p.inc(1);
+                }
             }
+            if pieces.len() <= final_size {
+                break;
+            }
+            pieces = self.prune_to_target(
+                &pieces,
+                &sentences,
+                &new_model,
+                self.shrink_target(&pieces, final_size),
+            );
+            new_model = Unigram::from(pieces.clone(), Some(0), false)?;
         }
         self.finalize_progress(&progress, expected_updates);
 
-        // 3. One flat score prune down to `vocab_size`.
-        pieces = flat_prune(&pieces, self.vocab_size as usize);
+        // 3. Final exact prune (criterion-dispatched) down to `vocab_size`.
+        pieces = self.prune_to_target(&pieces, &sentences, &new_model, final_size);
         new_model = Unigram::from(pieces.clone(), Some(0), false)?;
 
         // 4. Adjust the size of sentencepieces to be |vocab_size|.
@@ -583,6 +908,84 @@ mod tests {
         model.set_objective(Objective::MaxScore);
         let max_count = model.encode("hello").unwrap().len();
         assert!(min_count <= max_count);
+    }
+
+    #[test]
+    fn test_mi_prune_drops_low_mi_first() {
+        // "ab" x10 + "abcdef" x3: usage-count would drop abcdef (3 < 10),
+        // but removing it costs 12 extra tokens vs 10 for "ab", so minimum
+        // increase drops "ab" (MI 10 < 12; the [ab] shortcut in "abcdef"
+        // tiles it in 5, hence 12 rather than 15).
+        let pieces: Vec<SentencePiece> = ["<UNK>", "a", "b", "c", "d", "e", "f", "ab", "abcdef"]
+            .iter()
+            .map(|piece| (piece.to_string(), 0.0))
+            .collect();
+        let mut scored = pieces.clone();
+        scored[7].1 = 0.0; // ab: frequent...
+        scored[8].1 = -10.0; // abcdef: rare (usage-count would drop it)
+        let sentences = vec![("ab".to_string(), 10), ("abcdef".to_string(), 3)];
+        let model = Unigram::from(scored.clone(), Some(0), false).unwrap();
+        // Table values verified against script_tok's `compute_mi_table` on
+        // the same pieces, counts, and segmentation (ab 10.0, abcdef 12.0).
+        let mi = compute_mi_table(&scored, &sentences, &model);
+        assert_eq!(mi, vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, 12.0]);
+        let kept = mi_prune(&scored, &sentences, &model, 8, false);
+        let spellings: Vec<&str> = kept.iter().map(|(piece, _)| piece.as_str()).collect();
+        assert!(!spellings.contains(&"ab"));
+        assert!(spellings.contains(&"abcdef"));
+        // Same setup under usage-count pruning drops the rare piece instead.
+        let kept_usage = flat_prune(&scored, 8);
+        let spellings: Vec<&str> = kept_usage.iter().map(|(piece, _)| piece.as_str()).collect();
+        assert!(spellings.contains(&"ab"));
+        assert!(!spellings.contains(&"abcdef"));
+    }
+
+    #[test]
+    fn test_select_drop_batch_skip_substring() {
+        let pieces: Vec<SentencePiece> = ["<UNK>", "a", "b", "c", "ab", "abc"]
+            .iter()
+            .map(|piece| (piece.to_string(), 0.0))
+            .collect();
+        let ordered = [5, 4]; // abc first; ab is contained in it
+        assert_eq!(
+            select_drop_batch(&ordered, 2, &pieces, false),
+            AHashSet::from([4, 5])
+        );
+        assert_eq!(
+            select_drop_batch(&ordered, 2, &pieces, true),
+            AHashSet::from([5])
+        );
+    }
+
+    #[test]
+    fn test_mingram_mi_prune_trains() {
+        // MI pruning with gradual shrinking exercises the multi-outer loop;
+        // the default single-step schedule is covered by the tests below.
+        let corpus = || -> Vec<Sentence> {
+            vec![
+                ("hello".into(), 10),
+                ("world".into(), 8),
+                ("hello world".into(), 3),
+            ]
+        };
+        let train = || {
+            let trainer = MinGramTrainer::builder()
+                .show_progress(false)
+                .vocab_size(20)
+                .seed_size(30)
+                .seed_init(SeedInit::Substrings)
+                .prune_criterion(PruneCriterion::MinimumIncrease)
+                .pruning_shrinking_factor(0.5)
+                .skip_substring_in_batch(true)
+                .build()
+                .unwrap();
+            let mut model = Unigram::default();
+            trainer.do_train(corpus(), &mut model).unwrap();
+            model.iter().cloned().collect::<Vec<_>>()
+        };
+        let once = train();
+        assert!(once.len() <= 20);
+        assert_eq!(train(), once);
     }
 
     #[cfg(feature = "bpe")]
