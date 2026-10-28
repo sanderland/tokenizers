@@ -253,18 +253,49 @@ pub(crate) fn required_chars(
         .collect()
 }
 
+/// Proper UTF-8 prefixes of observed multibyte chars (`<0xE0A4>` style):
+/// the multibyte half of the byte floor. Only chars of 3+ bytes contribute;
+/// 2-byte chars are already covered by the singles. Sorted for determinism.
+fn prefix_pieces(required_chars: &AHashSet<String>) -> Vec<String> {
+    let mut prefixes: Vec<String> = vec![];
+    for c in required_chars {
+        let bytes = c.as_bytes();
+        if bytes.len() >= 3 {
+            for len in 2..bytes.len() {
+                let hex: String = bytes[..len].iter().map(|b| format!("{b:02X}")).collect();
+                prefixes.push(format!("<0x{hex}>"));
+            }
+        }
+    }
+    prefixes.sort();
+    prefixes.dedup();
+    prefixes
+}
+
 /// Lay out the final model: required chars first (reusing trained scores,
 /// backfilling missing chars just below the minimum), truncated to
-/// `vocab_size` including special tokens and the unk token.
+/// `vocab_size` including special tokens and the unk token. With
+/// `byte_prefixes`, the 256 single-byte pieces plus observed multibyte
+/// prefixes are appended after the truncation, so the learned vocabulary is
+/// unchanged and enabling the option only appends.
 pub(crate) fn finalize(
     vocab_size: u32,
     special_tokens: &[AddedToken],
     unk_token: &Option<String>,
     model: &Unigram,
     required_chars: AHashSet<String>,
+    byte_prefixes: bool,
 ) -> Result<Unigram> {
     let mut min_score_penalty = 0.0;
     let min_score_penalty_delta = 0.0001;
+
+    let byte_candidates: Vec<String> = if byte_prefixes {
+        let mut out: Vec<String> = (0..=255u32).map(|b| format!("<0x{b:02X}>")).collect();
+        out.extend(prefix_pieces(&required_chars));
+        out
+    } else {
+        vec![]
+    };
 
     let mut pieces: Vec<(String, f64)> = vec![];
     let mut inserted: AHashSet<String> = AHashSet::new();
@@ -320,6 +351,11 @@ pub(crate) fn finalize(
         }
     }
     pieces.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap());
+    for spelling in byte_candidates {
+        if !inserted.contains::<str>(&spelling) {
+            pieces.push((spelling, 0.0));
+        }
+    }
 
     // Insert the necessary tokens
     let mut special_tokens = special_tokens

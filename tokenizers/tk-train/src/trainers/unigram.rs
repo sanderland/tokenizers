@@ -49,6 +49,7 @@ pub struct UnigramTrainer {
     pub max_piece_length: usize,
     seed_size: usize,
     pub seed_init: SeedInit,
+    pub byte_prefixes: bool,
     words: AHashMap<String, u32>,
 }
 
@@ -66,6 +67,7 @@ pub struct UnigramTrainerBuilder {
     max_piece_length: Option<usize>,
     seed_size: Option<usize>,
     seed_init: Option<SeedInit>,
+    byte_prefixes: Option<bool>,
     words: Option<AHashMap<String, u32>>,
 }
 
@@ -120,6 +122,13 @@ impl UnigramTrainerBuilder {
         self
     }
 
+    /// Emit `<0x..>` byte pieces (256 singles plus observed multibyte
+    /// prefixes) so inference can tile uncovered bytes: ctok's byte floor.
+    pub fn byte_prefixes(&mut self, byte_prefixes: bool) -> &mut Self {
+        self.byte_prefixes = Some(byte_prefixes);
+        self
+    }
+
     pub fn words(&mut self, words: AHashMap<String, u32>) -> &mut Self {
         self.words = Some(words);
         self
@@ -137,6 +146,7 @@ impl UnigramTrainerBuilder {
             max_piece_length: self.max_piece_length.unwrap_or(16),
             seed_size: self.seed_size.unwrap_or(1_000_000),
             seed_init: self.seed_init.unwrap_or_default(),
+            byte_prefixes: self.byte_prefixes.unwrap_or(false),
             words: self.words.clone().unwrap_or_default(),
         })
     }
@@ -512,6 +522,7 @@ impl UnigramTrainer {
             &self.unk_token,
             &new_model,
             required_chars,
+            self.byte_prefixes,
         )?;
 
         Ok(self.special_tokens.clone())
@@ -681,5 +692,35 @@ mod tests {
         // Cross-combination: a UnigramTrainer model encodes under min_tokens.
         unigram.set_objective(tk_encode::models::unigram::Objective::MinTokens);
         assert!(!unigram.encode("hello").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_byte_prefixes_opt_in() {
+        let corpus = || -> Vec<Sentence> {
+            vec![("hello".into(), 10), ("日本語".into(), 8), ("🎉".into(), 3)]
+        };
+        let train = |byte_prefixes: bool| {
+            let trainer = UnigramTrainer::builder()
+                .show_progress(false)
+                .vocab_size(30)
+                .seed_size(40)
+                .byte_prefixes(byte_prefixes)
+                .build()
+                .unwrap();
+            let mut unigram = Unigram::default();
+            trainer.do_train(corpus(), &mut unigram).unwrap();
+            unigram.iter().cloned().collect::<Vec<_>>()
+        };
+        let off = train(false);
+        assert!(!off.iter().any(|(t, _)| t == "<0x00>"));
+        let on = train(true);
+        // The learned vocabulary is unchanged; the option only appends.
+        assert_eq!(&on[..off.len()], &off[..]);
+        let spellings: Vec<&str> = on.iter().map(|(t, _)| t.as_str()).collect();
+        // 日 E697A5 -> E697; 🎉 F09F8E89 -> F09F, F09F8E.
+        for piece in ["<0x00>", "<0xFF>", "<0xE697>", "<0xF09F>", "<0xF09F8E>"] {
+            assert!(spellings.contains(&piece), "missing {piece}");
+        }
+        assert_eq!(train(true), on);
     }
 }

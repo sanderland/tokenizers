@@ -253,6 +253,51 @@ fn byte_fallback_ids_survive_the_cache() {
     assert_eq!(pipeline_ids(&model, "é", &mut scratch), ids);
 }
 
+fn byte_vocab(with_prefix: bool) -> Vec<(String, f64)> {
+    let mut vocab = vec![("<unk>".to_string(), 0.0)];
+    for b in 0..=255u32 {
+        vocab.push((format!("<0x{b:02X}>"), 0.0));
+    }
+    if with_prefix {
+        vocab.push(("<0xF09F>".to_string(), 0.0));
+    }
+    vocab
+}
+
+#[test]
+fn byte_fallback_tiles_multibyte_prefixes() {
+    // ctok's byte floor: U+1F389 is F0 9F 8E 89, and with the F09F prefix
+    // piece it tiles as 3, not 4. Both paths share the tiling.
+    let model = Unigram::from(byte_vocab(true), Some(0), true).unwrap();
+    let mut scratch = Model::init_scratch(&model);
+    let ids = pipeline_ids(&model, "🎉", &mut scratch);
+    let spellings: Vec<String> = ids
+        .iter()
+        .map(|id| model.id_to_token(*id).unwrap())
+        .collect();
+    assert_eq!(spellings, ["<0xF09F>", "<0x8E>", "<0x89>"]);
+
+    let legacy: Vec<u32> = model.tokenize("🎉").unwrap().iter().map(|t| t.id).collect();
+    assert_eq!(legacy, ids);
+}
+
+#[test]
+fn byte_fallback_singles_only_is_one_id_per_byte() {
+    // Without multibyte prefixes the tiling is exactly the old behavior.
+    let model = Unigram::from(byte_vocab(false), Some(0), true).unwrap();
+    let mut scratch = Model::init_scratch(&model);
+    assert_eq!(pipeline_ids(&model, "🎉", &mut scratch).len(), 4);
+}
+
+#[test]
+fn byte_fallback_without_singles_falls_back_to_unk() {
+    // A multibyte prefix alone tiles nothing: the floor is the singles.
+    let vocab = vec![("<unk>".to_string(), 0.0), ("<0xF09F>".to_string(), 0.0)];
+    let model = Unigram::from(vocab, Some(0), true).unwrap();
+    let mut scratch = Model::init_scratch(&model);
+    assert_eq!(pipeline_ids(&model, "🎉", &mut scratch), [0]);
+}
+
 #[test]
 fn sampling_is_never_cached() {
     // A sampled tokenization is one draw out of many. Remembering it would turn

@@ -52,6 +52,8 @@ pub struct Unigram {
     fuse_unk: bool,
     is_optimized: bool,
     byte_fallback: bool,
+    /// `<0x..>` byte pieces by their decoded bytes, for the fallback tiling.
+    byte_pieces: HashMap<Vec<u8>, u32>,
     objective: Objective,
 
     pub alpha: Option<f64>,
@@ -84,6 +86,7 @@ impl Clone for Unigram {
             fuse_unk: self.fuse_unk,
             is_optimized: self.is_optimized,
             byte_fallback: self.byte_fallback,
+            byte_pieces: self.byte_pieces.clone(),
             objective: self.objective,
             alpha: self.alpha,
             nbest_size: self.nbest_size,
@@ -118,6 +121,19 @@ impl Default for Unigram {
         let vocab = vec![("<unk>".to_string(), 0.0)];
         Self::from(vocab, Some(0), false).unwrap()
     }
+}
+
+/// `<0xAB..>` spellings to the bytes they stand for: one hex pair per byte.
+fn parse_byte_piece(token: &str) -> Option<Vec<u8>> {
+    let hex = token.strip_prefix("<0x")?.strip_suffix('>')?;
+    if hex.is_empty() || hex.len() % 2 != 0 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for i in (0..hex.len()).step_by(2) {
+        bytes.push(u8::from_str_radix(&hex[i..i + 2], 16).ok()?);
+    }
+    Some(bytes)
 }
 
 impl Unigram {
@@ -163,6 +179,12 @@ impl Unigram {
         let trie = builder.build();
         let fuse_unk = true;
         let is_optimized = true;
+        let mut byte_pieces = HashMap::new();
+        for (id, (token, _)) in vocab.iter().enumerate() {
+            if let Some(bytes) = parse_byte_piece(token) {
+                byte_pieces.entry(bytes).or_insert(id as u32);
+            }
+        }
 
         Ok(Self {
             vocab,
@@ -176,6 +198,7 @@ impl Unigram {
             cache: Cache::default(),
             is_optimized,
             byte_fallback,
+            byte_pieces,
             objective: Objective::default(),
             alpha: None,
             nbest_size: None,
@@ -507,6 +530,43 @@ impl Unigram {
     pub fn resize_cache(&mut self, capacity: usize) {
         self.cache.resize(capacity);
     }
+
+    /// Min-count tiling of an unknown piece's bytes over the `<0x..>` byte
+    /// pieces in vocab: singles, plus any multibyte prefixes training
+    /// emitted. This is ctok's byte floor. `None` when a byte has no
+    /// single-byte piece, exactly when the old per-byte map gave up.
+    fn byte_fallback_ids(&self, s: &str) -> Option<Vec<u32>> {
+        let bytes = s.as_bytes();
+        // best[i] is the cheapest (count, first-piece length) tiling of the
+        // suffix starting at i; equal counts prefer the longer first piece.
+        let mut best: Vec<Option<(usize, usize)>> = vec![None; bytes.len() + 1];
+        best[bytes.len()] = Some((0, 0));
+        for i in (0..bytes.len()).rev() {
+            let mut cand: Option<(usize, usize)> = None;
+            for len in 1..=bytes.len() - i {
+                if self.byte_pieces.contains_key(&bytes[i..i + len])
+                    && let Some((count, _)) = best[i + len]
+                {
+                    let better = match cand {
+                        None => true,
+                        Some((c, l)) => count + 1 < c || (count + 1 == c && len > l),
+                    };
+                    if better {
+                        cand = Some((count + 1, len));
+                    }
+                }
+            }
+            best[i] = cand;
+        }
+        let mut ids = vec![];
+        let mut i = 0;
+        while i < bytes.len() {
+            let (_, len) = best[i]?;
+            ids.push(self.byte_pieces[&bytes[i..i + len]]);
+            i += len;
+        }
+        Some(ids)
+    }
 }
 
 /// Iterator to iterate of vocabulary of the model, and their relative score.
@@ -552,22 +612,15 @@ impl Unigram {
             let id: u32 = match self.token_to_ids.token_to_id(&string) {
                 Some(id) => id,
                 None => {
-                    if self.byte_fallback {
-                        let byte_tokens: Option<Vec<_>> = string
-                            .bytes()
-                            .map(|byte| -> Option<Token> {
-                                let byte_string = format!("<0x{byte:02X}>");
-                                let id = self.token_to_ids.token_to_id(&byte_string);
-                                id.map(|id| Token::new(id, byte_string, (offset, offset + len)))
-                            })
-                            .collect();
-                        if let Some(byte_tokens) = byte_tokens {
-                            for token in byte_tokens {
-                                tokens.push(token);
-                            }
-                            offset += len;
-                            continue;
+                    if self.byte_fallback
+                        && let Some(ids) = self.byte_fallback_ids(&string)
+                    {
+                        for id in ids {
+                            let byte_string = self.vocab[id as usize].0.clone();
+                            tokens.push(Token::new(id, byte_string, (offset, offset + len)));
                         }
+                        offset += len;
+                        continue;
                     }
                     self.unk_id.ok_or(UnigramError::MissingUnkId)? as u32
                 }
@@ -639,18 +692,11 @@ impl pipeline::Model for Unigram {
                     output.push(PipelineToken::from(id));
                 }
                 None => {
-                    if self.byte_fallback {
-                        let byte_token_ids: Option<Vec<_>> = string
-                            .bytes()
-                            .map(|byte| {
-                                let byte_string = format!("<0x{byte:02X}>");
-                                self.token_to_ids.token_to_id(&byte_string)
-                            })
-                            .collect();
-                        if let Some(token_ids) = byte_token_ids {
-                            output.extend(token_ids.iter().copied().map(PipelineToken::from));
-                            continue;
-                        }
+                    if self.byte_fallback
+                        && let Some(ids) = self.byte_fallback_ids(&string)
+                    {
+                        output.extend(ids.iter().copied().map(PipelineToken::from));
+                        continue;
                     }
                     output.push(PipelineToken::from(
                         self.unk_id.ok_or(UnigramError::MissingUnkId)? as u32,
