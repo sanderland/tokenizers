@@ -99,7 +99,9 @@ fn join_bytes(tokens: &[String]) -> String {
 }
 
 /// The seam law backwards: `⟨eow⟩[⟨shift⟩⟨caps⟩]*⟨bow⟩` restores the eaten
-/// space, keeping the case markers for the next pass.
+/// space, keeping the case markers for the next pass. Only the `⟨bow⟩` goes:
+/// the `⟨eow⟩` stays because it ends the `⟨caps⟩` extent, which the marker
+/// pass reads.
 fn restore_seams(marked: &str) -> String {
     let chars: Vec<char> = marked.chars().collect();
     let mut out = String::with_capacity(marked.len());
@@ -111,6 +113,7 @@ fn restore_seams(marked: &str) -> String {
                 j += 1;
             }
             if chars.get(j) == Some(&BOW_G) {
+                out.push(EOW_G);
                 out.push(' ');
                 out.extend(&chars[i + 1..j]);
                 i = j + 1;
@@ -224,6 +227,8 @@ mod tests {
             "hello world",
             "Hello World",
             "HELLO WORLD",
+            "HELLO world",
+            "hello WORLD",
             "ABC",
             "ABCD",
             "don't stop",
