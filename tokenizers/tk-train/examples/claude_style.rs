@@ -20,6 +20,8 @@
 
 use std::collections::BTreeMap;
 use std::error::Error;
+use tk_encode::decoders::DecoderRuntime;
+use tk_encode::decoders::unmark::Unmark;
 use tk_encode::models::unigram::Unigram;
 use tk_encode::normalizers::{ClaudeNormalizer, MarkBoundaries};
 use tk_encode::pipeline::{
@@ -92,7 +94,7 @@ fn pipeline_for(model: Unigram, marking: MarkBoundaries) -> PipelineTokenizer {
         PipelinePreTokenizer::None,
         PipelineModel::Unigram(model),
         PipelinePostProcessor::default(),
-        None,
+        Some(DecoderRuntime::Unmark(Unmark::new())),
         BTreeMap::default(),
         None,
         None,
@@ -147,6 +149,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         "प्रेम हिन्दी",
     ];
     let mut strictly_fewer = 0;
+    let cleanup = ClaudeNormalizer::new(false);
     for demo in demos {
         let buggy = faithful.encode(vec![demo], &options).wait()?;
         let mended = fixed.encode(vec![demo], &options).wait()?;
@@ -154,6 +157,12 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         println!("{demo:?}: faithful {b} tokens, fixed {m} tokens");
         let tokens = fixed.decode_tokens(PipelineToken::cast_slice(mended[0].ids()), false);
         println!("  fixed tokens: {tokens:?}");
+        // Full round-trip through tiling, bytes, and the decoder.
+        for (pipeline, encoding) in [(&faithful, &buggy[0]), (&fixed, &mended[0])] {
+            let back = pipeline.decode(PipelineToken::cast_slice(encoding.ids()), false)?;
+            assert_eq!(back, cleanup.clean(demo), "round-trip of {demo:?}");
+        }
+        println!("  decodes to: {:?}", cleanup.clean(demo));
         strictly_fewer += usize::from(m < b);
     }
     assert!(
