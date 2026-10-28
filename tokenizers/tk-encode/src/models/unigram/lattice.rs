@@ -228,7 +228,8 @@ impl<'a> Lattice<'a> {
     /// wins, ties broken by highest total score, remaining ties longest-first
     /// (at each end position the latest start wins, script_tok MinGram's
     /// last-write rule). Backtrace state lives in side tables so the
-    /// score-based `viterbi`/`nbest`/`sample` paths are untouched.
+    /// score-based `viterbi`/`nbest`/`sample` paths are untouched. An empty
+    /// result means no path covers the sentence (no unk node could be placed).
     pub fn viterbi_min_tokens(&mut self) -> Vec<NodeRef> {
         let len = self.len;
         let eos_id = self.begin_nodes[len][0].borrow().node_id;
@@ -239,9 +240,6 @@ impl<'a> Lattice<'a> {
 
         let mut pos = 0;
         while pos <= len {
-            if self.begin_nodes[pos].is_empty() {
-                return vec![];
-            }
             for rnode in &self.begin_nodes[pos] {
                 let rid = rnode.borrow().node_id;
                 let rscore = rnode.borrow().score;
@@ -272,12 +270,11 @@ impl<'a> Lattice<'a> {
                         }
                     }
                 }
-                match (best_node, best_here) {
-                    (Some(bnode), Some(b)) => {
-                        prev[rid] = Some(bnode);
-                        best[rid] = Some(b);
-                    }
-                    _ => return vec![],
+                // No reachable predecessor: the node is dead weight (a long
+                // token can jump over its position), not a failed path.
+                if let (Some(bnode), Some(b)) = (best_node, best_here) {
+                    prev[rid] = Some(bnode);
+                    best[rid] = Some(b);
                 }
             }
             if let Some(c) = self.sentence[pos..].chars().next() {

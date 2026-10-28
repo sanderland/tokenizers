@@ -471,6 +471,11 @@ impl Unigram {
         let mut lattice = Lattice::from(sentence, self.bos_id, self.eos_id);
         self.populate_nodes(&mut lattice);
         let path = lattice.viterbi_min_tokens();
+        if path.is_empty() && !sentence.is_empty() {
+            // No unk node could cover the input; silently returning zero
+            // tokens is the worst option (MaxScore raises here).
+            return Err(Box::new(UnigramError::MissingUnkId));
+        }
         if self.fuse_unk {
             let mut results = vec![];
             let mut token = String::new();
@@ -537,13 +542,21 @@ impl Unigram {
     /// single-byte piece, exactly when the old per-byte map gave up.
     fn byte_fallback_ids(&self, s: &str) -> Option<Vec<u32>> {
         let bytes = s.as_bytes();
+        // No byte piece is longer than the longest one in vocab; trying
+        // longer lengths at every offset is O(n^2) for nothing.
+        let max_len = self
+            .byte_pieces
+            .keys()
+            .map(|key| key.len())
+            .max()
+            .unwrap_or(0);
         // best[i] is the cheapest (count, first-piece length) tiling of the
         // suffix starting at i; equal counts prefer the longer first piece.
         let mut best: Vec<Option<(usize, usize)>> = vec![None; bytes.len() + 1];
         best[bytes.len()] = Some((0, 0));
         for i in (0..bytes.len()).rev() {
             let mut cand: Option<(usize, usize)> = None;
-            for len in 1..=bytes.len() - i {
+            for len in 1..=max_len.min(bytes.len() - i) {
                 if self.byte_pieces.contains_key(&bytes[i..i + len])
                     && let Some((count, _)) = best[i + len]
                 {

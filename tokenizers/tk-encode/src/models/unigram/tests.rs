@@ -355,6 +355,26 @@ fn test_objective_min_tokens() {
 }
 
 #[test]
+fn test_min_tokens_skips_unreachable_and_raises_without_path() {
+    // A long token jumps over intermediate positions: their nodes have no
+    // reachable predecessor and must not kill the whole path.
+    let mut model = Unigram::from(
+        vec![
+            ("abc".to_string(), 0.0),
+            ("b".to_string(), -1.0),
+            ("c".to_string(), -1.0),
+        ],
+        None,
+        false,
+    )
+    .unwrap();
+    model.set_objective(Objective::MinTokens);
+    assert_eq!(model.encode("abc").unwrap(), vec!["abc"]);
+    // Nothing covers "xyz" and there is no unk: an error, not zero tokens.
+    assert!(model.encode("xyz").is_err());
+}
+
+#[test]
 fn min_tokens_agrees_on_the_legacy_and_pipeline_paths() {
     // Both paths funnel through `encode_uncached`, so one objective switch
     // moves both. Id 7 is "abcd".
