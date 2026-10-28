@@ -11,6 +11,7 @@ use crate::trainers::bpe::BpeTrainer;
 use ahash::{AHashMap, AHashSet};
 #[cfg(feature = "bpe")]
 use compact_str::CompactString;
+use log::debug;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use tk_encode::Result;
@@ -289,6 +290,9 @@ pub(crate) fn finalize(
     required_chars: AHashSet<String>,
     byte_prefixes: bool,
 ) -> Result<Unigram> {
+    if byte_prefixes && unk_token.is_none() {
+        debug!("byte floor on without unk_token: uncoverable input encodes to nothing");
+    }
     let mut min_score_penalty = 0.0;
     let min_score_penalty_delta = 0.0001;
 
@@ -372,7 +376,7 @@ pub(crate) fn finalize(
     Unigram::from(
         special_tokens.into_iter().chain(pieces).collect(),
         unk_id,
-        model.byte_fallback(),
+        model.byte_fallback() || byte_prefixes,
     )
 }
 
@@ -474,6 +478,16 @@ mod tests {
         let first = make_bpe_seed_pieces(&sentences, 30, 16, &alphabet).unwrap();
         let second = make_bpe_seed_pieces(&sentences, 30, 16, &alphabet).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_finalize_sets_byte_fallback_with_floor() {
+        let model = Unigram::from(vec![("a".into(), 0.0)], None, false).unwrap();
+        let chars: AHashSet<String> = ["a".to_string()].into_iter().collect();
+        for byte_prefixes in [false, true] {
+            let out = finalize(30, &[], &None, &model, chars.clone(), byte_prefixes).unwrap();
+            assert_eq!(out.byte_fallback(), byte_prefixes);
+        }
     }
 
     #[test]
