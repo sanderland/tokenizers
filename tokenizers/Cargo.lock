@@ -3218,6 +3218,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tk-encode",
+ "tk-serialize",
 ]
 
 [[package]]

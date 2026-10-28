@@ -46,7 +46,21 @@ wordlevel = ["tk-encode/wordlevel"]
 esaxx_fast = ["unigram", "esaxx-rs/cpp"]
 progressbar = ["dep:indicatif"]
 parity-aware-bpe = ["bpe"]
+normalizers = ["tk-encode/normalizers"]
 
 [dev-dependencies]
 tempfile = "3.10"
 assert_approx_eq = "1.1"
+tk-serialize = { path = "../tk-serialize", features = [
+  "serialize",
+  "deserialize",
+  "unigram",
+  "normalizers",
+  "bpe",
+  "wordlevel",
+  "wordpiece",
+] }
+
+[[example]]
+name = "claude_style"
+required-features = ["normalizers"]
