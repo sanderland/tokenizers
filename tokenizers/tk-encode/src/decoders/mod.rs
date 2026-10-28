@@ -7,6 +7,8 @@ pub mod metaspace;
 pub mod replace;
 pub mod runtime;
 pub mod strip;
+#[cfg(feature = "normalizers")]
+pub mod unmark;
 pub mod wordpiece;
 
 pub use runtime::DecoderRuntime;

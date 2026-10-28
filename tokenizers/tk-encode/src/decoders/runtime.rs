@@ -7,6 +7,8 @@ use crate::decoders::fuse::Fuse;
 use crate::decoders::metaspace::MetaspaceDecoder;
 use crate::decoders::replace::ReplaceDecoder;
 use crate::decoders::strip::Strip;
+#[cfg(feature = "normalizers")]
+use crate::decoders::unmark::Unmark;
 use crate::decoders::wordpiece::WordPiece;
 use crate::{Decoder, Result};
 
@@ -22,6 +24,8 @@ pub enum DecoderRuntime {
     Fuse(Fuse),
     Strip(Strip),
     ByteFallback(ByteFallback),
+    #[cfg(feature = "normalizers")]
+    Unmark(Unmark),
 }
 
 impl Decoder for DecoderRuntime {
@@ -42,6 +46,8 @@ impl Decoder for DecoderRuntime {
             Self::ByteFallback(bf) => bf.decode_chain(tokens),
             Self::Strip(st) => st.decode_chain(tokens),
             Self::Fuse(fs) => fs.decode_chain(tokens),
+            #[cfg(feature = "normalizers")]
+            Self::Unmark(un) => un.decode_chain(tokens),
         }
     }
 }

@@ -322,6 +322,16 @@ fn builds_every_decoder_variant_and_refuses_the_rest() {
     assert!(error.contains("`Invented` decoder"), "{error}");
 }
 
+#[cfg(feature = "normalizers")]
+#[test]
+fn reads_the_unmark_decoder() {
+    let doc = Json::parse(r#"{"type": "Unmark"}"#).unwrap();
+    assert!(matches!(
+        read_one_decoder(&doc).unwrap(),
+        tk_encode::decoders::DecoderRuntime::Unmark(_)
+    ));
+}
+
 #[test]
 fn a_decoder_reads_back_what_the_slim_path_wired_up() {
     let json = config(&[(

@@ -14,6 +14,8 @@ use tk_encode::decoders::metaspace::MetaspaceDecoder;
 use tk_encode::decoders::metaspace::PrependScheme;
 use tk_encode::decoders::replace::ReplaceDecoder;
 use tk_encode::decoders::strip::Strip as StripDecoder;
+#[cfg(feature = "normalizers")]
+use tk_encode::decoders::unmark::Unmark;
 use tk_encode::decoders::wordpiece::WordPiece as WordPieceDecoder;
 use tk_encode::tokenizer::Result;
 
@@ -51,6 +53,8 @@ pub(super) fn read_one_decoder(cfg: &Json<'_>) -> Result<DecoderRuntime> {
         "ByteLevel" => DecoderRuntime::ByteLevel(ByteLevelDecoder::new()),
         "Replace" => DecoderRuntime::Replace(read_replace_decoder(cfg)?),
         "ByteFallback" => DecoderRuntime::ByteFallback(ByteFallback::new()),
+        #[cfg(feature = "normalizers")]
+        "Unmark" => DecoderRuntime::Unmark(Unmark::new()),
         "Fuse" => DecoderRuntime::Fuse(Fuse::new()),
         "Strip" => DecoderRuntime::Strip(StripDecoder::new(
             read_char(cfg, "content")?,

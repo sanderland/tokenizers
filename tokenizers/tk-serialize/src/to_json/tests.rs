@@ -258,6 +258,7 @@ const BERT: &[(&str, &str)] = &[
 const BERT: &[(&str, &str)] = &[];
 
 /// `allcaps_min: null` disables ⟨caps⟩ (the v4.7 spelling); 4 is the v3 preset.
+/// `Unmark` inverts either marking, so the decoder has no options.
 #[cfg(feature = "normalizers")]
 #[rustfmt::skip]
 const MARK: &[(&str, &str)] = &[
@@ -265,6 +266,7 @@ const MARK: &[(&str, &str)] = &[
     ("normalizer", r#"{"type": "ClaudeNormalizer", "fold_quotes": false}"#),
     ("normalizer", r#"{"type": "MarkBoundaries", "allcaps_min": 4, "marks_part_of_words": false}"#),
     ("normalizer", r#"{"type": "MarkBoundaries", "allcaps_min": null, "marks_part_of_words": true}"#),
+    ("decoder", r#"{"type": "Unmark"}"#),
 ];
 #[cfg(not(feature = "normalizers"))]
 const MARK: &[(&str, &str)] = &[];

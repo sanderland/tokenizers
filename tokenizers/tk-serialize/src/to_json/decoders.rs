@@ -35,6 +35,12 @@ fn write_one(out: &mut Out, decoder: &DecoderRuntime) {
             out.type_tag("ByteFallback");
             out.obj_close();
         }
+        #[cfg(feature = "normalizers")]
+        DecoderRuntime::Unmark(_) => {
+            out.obj_open();
+            out.type_tag("Unmark");
+            out.obj_close();
+        }
         DecoderRuntime::Fuse(_) => {
             out.obj_open();
             out.type_tag("Fuse");
