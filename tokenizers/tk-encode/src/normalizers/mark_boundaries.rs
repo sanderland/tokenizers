@@ -8,9 +8,9 @@
 //!
 //! This is the lossless half of the pipeline: marking is invertible (a
 //! decoder can strip markers, restore seam spaces and case), unlike the
-//! lossy [`Cleanup`](super::cleanup::Cleanup) it pairs with in a `Sequence`.
-//! Input must already be clean (NFC, stripped, folded); ctok's `stream()`
-//! is `Cleanup` then this.
+//! lossy [`ClaudeNormalizer`](super::claude_normalizer::ClaudeNormalizer) it
+//! pairs with in a `Sequence`. Input must already be clean (NFC, stripped,
+//! folded); ctok's `stream()` is `ClaudeNormalizer` then this.
 //!
 //! This lives in the normalizer slot rather than with the pre-tokenizers for a
 //! mechanical reason: pipeline pre-tokenizers emit spans into the text they are
@@ -501,9 +501,10 @@ fn apply_seam_law(marked: &str) -> String {
 /// Options select the boundary rules. The default is the fixed
 /// configuration: v3 rules with the mark-splitting bug repaired.
 /// `v3`, `v47` and `v48` reproduce ctok's measured Claude families exactly,
-/// bug included. Each pairs with a [`Cleanup`](super::cleanup::Cleanup) in
-/// a `Sequence` (`fold_quotes` true for v3, false for v4.7+); feeding raw
-/// text here skips the lossy cleanup and mis-marks it.
+/// bug included. Each pairs with a
+/// [`ClaudeNormalizer`](super::claude_normalizer::ClaudeNormalizer) in a
+/// `Sequence` (`fold_quotes` true for v3, false for v4.7+); feeding raw text
+/// here skips the lossy normalization and mis-marks it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct MarkBoundaries {
@@ -522,7 +523,7 @@ pub struct MarkBoundaries {
 
 impl Default for MarkBoundaries {
     /// v3 boundary rules with the mark-splitting bug repaired.
-    /// Pairs with `Cleanup { fold_quotes: true }`.
+    /// Pairs with `ClaudeNormalizer { fold_quotes: true }`.
     fn default() -> Self {
         Self {
             allcaps_min: Some(4),
@@ -542,7 +543,7 @@ impl MarkBoundaries {
     }
 
     /// v3 boundary rules, exactly as ctok measures them on Claude (marks split words).
-    /// Pairs with `Cleanup { fold_quotes: true }`.
+    /// Pairs with `ClaudeNormalizer { fold_quotes: true }`.
     pub fn v3() -> Self {
         Self {
             allcaps_min: Some(4),
@@ -552,7 +553,7 @@ impl MarkBoundaries {
     }
 
     /// v4.7 boundary rules on Claude: no ⟨caps⟩ (marks split words).
-    /// Pairs with `Cleanup { fold_quotes: false }`.
+    /// Pairs with `ClaudeNormalizer { fold_quotes: false }`.
     pub fn v47() -> Self {
         Self {
             allcaps_min: None,
@@ -562,7 +563,7 @@ impl MarkBoundaries {
     }
 
     /// v4.8 boundary rules on Claude: v4.7 without the frame ⟨bow⟩ (marks split words).
-    /// Pairs with `Cleanup { fold_quotes: false }`.
+    /// Pairs with `ClaudeNormalizer { fold_quotes: false }`.
     pub fn v48() -> Self {
         Self {
             allcaps_min: None,
@@ -698,7 +699,7 @@ impl pipeline::Normalizer for MarkBoundaries {
     fn normalize<'a>(&self, input: &'a str, _offset: usize) -> Result<Cow<'a, str>> {
         // Every input is its own message: text start counts as message start
         // for border purposes regardless of where the input sits in a pair.
-        // The chain must run Cleanup first; this step marks clean text only.
+        // The chain must normalize first; this step marks clean text only.
         Ok(Cow::Owned(self.marked_stream(input)))
     }
 }
@@ -706,7 +707,7 @@ impl pipeline::Normalizer for MarkBoundaries {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::normalizers::Cleanup;
+    use crate::normalizers::ClaudeNormalizer;
 
     // ctok public notation: ⟨bow⟩=BOW_G, ⟨eow⟩=EOW_G, ⟨shift⟩=SHIFT_G,
     // ⟨caps⟩=CAPS_G. Expectations below were captured from ctok's `stream`
@@ -751,7 +752,7 @@ mod tests {
 
     #[test]
     fn test_marked_stream_v3() {
-        let clean = Cleanup::new(true);
+        let clean = ClaudeNormalizer::new(true);
         let mark = MarkBoundaries::v3();
         for (input, expected) in v3_cases() {
             assert_eq!(
@@ -768,7 +769,7 @@ mod tests {
         // The article's three examples: Yoruba graves, Hindi viramas and the
         // Thai tone marks split words under the ctok-faithful presets but stay
         // inside under the default.
-        let clean = Cleanup::new(true);
+        let clean = ClaudeNormalizer::new(true);
         let fixed = MarkBoundaries::default();
         assert!(fixed.marks_part_of_words);
         let marked = |t: &str| fixed.marked_stream(&clean.clean(t));
@@ -796,7 +797,7 @@ mod tests {
     fn test_marks_part_of_words_keeps_vs_riding() {
         // A variation selector still rides its base in fixed mode: the emoji
         // stays one hard run, and the selector never opens a word run.
-        let clean = Cleanup::new(true);
+        let clean = ClaudeNormalizer::new(true);
         let fixed = MarkBoundaries::default();
         assert_eq!(
             fixed.marked_stream(&clean.clean("a✈️b")),
@@ -806,7 +807,7 @@ mod tests {
 
     #[test]
     fn test_marked_stream_v47() {
-        let clean = Cleanup::new(false);
+        let clean = ClaudeNormalizer::new(false);
         let mark = MarkBoundaries::v47();
         let marked = |t: &str| mark.marked_stream(&clean.clean(t));
         assert_eq!(marked("HELLO"), format!("{B}HELLO{E}"));
@@ -820,7 +821,7 @@ mod tests {
 
     #[test]
     fn test_marked_stream_v48() {
-        let clean = Cleanup::new(false);
+        let clean = ClaudeNormalizer::new(false);
         let mark = MarkBoundaries::v48();
         let marked = |t: &str| mark.marked_stream(&clean.clean(t));
         assert_eq!(marked("123"), "123");
@@ -831,11 +832,11 @@ mod tests {
     #[test]
     fn test_marked_stream_empty() {
         assert_eq!(
-            MarkBoundaries::default().marked_stream(&Cleanup::new(true).clean("")),
+            MarkBoundaries::default().marked_stream(&ClaudeNormalizer::new(true).clean("")),
             B
         );
         assert_eq!(
-            MarkBoundaries::v48().marked_stream(&Cleanup::new(false).clean("")),
+            MarkBoundaries::v48().marked_stream(&ClaudeNormalizer::new(false).clean("")),
             ""
         );
     }

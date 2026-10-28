@@ -1,10 +1,12 @@
-//! Lossy cleanup normalizer: text -> ctok's `nfc` form.
+//! Claude's text normalization: raw text -> ctok's `nfc` form.
 //!
 //! // EXISTING CODE (pre-hackathon): ported from ctok/ctok/normalize.py
-//! // (`nfc`). This is the lossy half of the pipeline: NFC, control
-//! // stripping, NUL/space/quote folding. It cannot be decoded back.
-//! // Pair it with [`MarkBoundaries`](super::mark_boundaries::MarkBoundaries)
-//! // in a `Sequence`: cleanup first, boundary marking second.
+//! // (`nfc`). Specific, sometimes weird, measured rules: NFC, control
+//! // stripping, NUL/space/quote folding, the Thai SARA AM fix, BMP PUA
+//! // stripping. This is normalization proper (canonicalize); the boundary
+//! // marking in [`MarkBoundaries`](super::mark_boundaries::MarkBoundaries)
+//! // is a rewrite that pairs with it in a `Sequence`, cleanup first.
+//! // Lossy: it cannot be decoded back.
 //!
 //! Every step is idempotent, so running cleanup twice (once here, once
 //! inside a composed call) changes nothing but costs a second pass.
@@ -30,23 +32,24 @@ fn is_strip_control(c: char) -> bool {
     )
 }
 
-/// Lossy cleanup: NFC, control stripping, NUL/space/quote folding.
-/// The v3 pairing uses `fold_quotes: true`, v4.7+ `false`.
+/// Claude's text normalization: NFC, control stripping, NUL/space/quote
+/// folding, exactly as ctok measures them. The v3 pairing uses
+/// `fold_quotes: true`, v4.7+ `false`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct Cleanup {
+pub struct ClaudeNormalizer {
     /// Fold curly quotes to ASCII (v3 only).
     pub fold_quotes: bool,
 }
 
-impl Default for Cleanup {
-    /// v3 cleanup rules (quote folding on).
+impl Default for ClaudeNormalizer {
+    /// v3 normalization rules (quote folding on).
     fn default() -> Self {
         Self { fold_quotes: true }
     }
 }
 
-impl Cleanup {
+impl ClaudeNormalizer {
     pub fn new(fold_quotes: bool) -> Self {
         Self { fold_quotes }
     }
@@ -87,7 +90,7 @@ impl Cleanup {
     }
 }
 
-impl pipeline::Normalizer for Cleanup {
+impl pipeline::Normalizer for ClaudeNormalizer {
     fn normalize<'a>(&self, input: &'a str, _offset: usize) -> Result<Cow<'a, str>> {
         Ok(Cow::Owned(self.clean(input)))
     }
@@ -99,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_clean_folds_quotes_spaces_and_controls() {
-        let clean = Cleanup::new(true);
+        let clean = ClaudeNormalizer::new(true);
         assert_eq!(clean.clean("\u{201C}hi\u{201D}"), "\"hi\"");
         assert_eq!(clean.clean("a\u{A0}b\u{2003}c"), "a b c");
         assert_eq!(clean.clean("a\x01b\x7F"), "ab");
@@ -109,7 +112,7 @@ mod tests {
         assert_eq!(clean.clean("a\u{E000}b"), "ab");
         assert_eq!(clean.clean("a\tb\nc"), "a\tb\nc");
 
-        let unfolded = Cleanup::new(false);
+        let unfolded = ClaudeNormalizer::new(false);
         assert_eq!(unfolded.clean("\u{201C}hi\u{201D}"), "\u{201C}hi\u{201D}");
         assert_eq!(unfolded.clean("a\u{A0}b"), "a b");
     }
@@ -117,8 +120,8 @@ mod tests {
     #[test]
     fn test_clean_is_idempotent() {
         for text in ["\u{201C}a\u{A0}b\x01\0", "plain", ""] {
-            let once = Cleanup::new(true).clean(text);
-            assert_eq!(Cleanup::new(true).clean(&once), once);
+            let once = ClaudeNormalizer::new(true).clean(text);
+            assert_eq!(ClaudeNormalizer::new(true).clean(&once), once);
         }
     }
 }

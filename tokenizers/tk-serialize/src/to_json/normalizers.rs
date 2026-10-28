@@ -74,9 +74,9 @@ fn write_one(out: &mut Out, normalizer: &PipelineNormalizer) -> Result<()> {
         PipelineNormalizer::ByteLevel(_) => bare(out, "ByteLevel"),
         #[cfg(feature = "normalizers")]
         #[cfg(feature = "normalizers")]
-        PipelineNormalizer::Cleanup(clean) => {
+        PipelineNormalizer::ClaudeNormalizer(clean) => {
             out.obj_open();
-            out.type_tag("Cleanup");
+            out.type_tag("ClaudeNormalizer");
             out.field_bool("fold_quotes", clean.fold_quotes);
             out.obj_close();
         }

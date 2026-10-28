@@ -2,7 +2,7 @@
 pub mod bert;
 pub mod byte_level;
 #[cfg(feature = "normalizers")]
-pub mod cleanup;
+pub mod claude_normalizer;
 #[cfg(feature = "normalizers")]
 pub mod mark_boundaries;
 pub mod metaspace;
@@ -20,7 +20,7 @@ pub mod utils;
 pub use crate::normalizers::bert::BertNormalizer;
 pub use crate::normalizers::byte_level::ByteLevel;
 #[cfg(feature = "normalizers")]
-pub use crate::normalizers::cleanup::Cleanup;
+pub use crate::normalizers::claude_normalizer::ClaudeNormalizer;
 #[cfg(feature = "normalizers")]
 pub use crate::normalizers::mark_boundaries::MarkBoundaries;
 #[cfg(feature = "normalizers")]
