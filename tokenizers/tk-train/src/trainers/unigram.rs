@@ -707,10 +707,19 @@ mod tests {
         // The floor counts toward vocab_size: never overshoot it.
         assert!(spellings.len() <= 300, "overshot: {}", spellings.len());
         // 日 E697A5 -> E697; 🎉 F09F8E89 -> F09F, F09F8E.
-        for piece in ["<0x00>", "<0xF4>", "<0xE697>", "<0xF09F>", "<0xF09F8E>"] {
+        for piece in [
+            "<0x00>",
+            "<0x0A>",
+            "<0x71>",
+            "<0xF4>",
+            "<0xE697>",
+            "<0xF09F>",
+            "<0xF09F8E>",
+        ] {
             assert!(spellings.contains(&piece), "missing {piece}");
         }
-        for missing in ["<0xC0>", "<0xC1>", "<0xF5>", "<0xFF>"] {
+        // Seen ASCII keeps its real piece: `h` tiles `<0x68>` already.
+        for missing in ["<0x68>", "<0xC0>", "<0xC1>", "<0xF5>", "<0xFF>"] {
             assert!(!spellings.contains(&missing), "{missing} must be absent");
         }
     }

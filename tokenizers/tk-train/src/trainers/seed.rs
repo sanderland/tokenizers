@@ -278,12 +278,17 @@ fn prefix_pieces(required_chars: &AHashSet<String>) -> Vec<String> {
 
 /// The byte floor: the 243 byte values that occur in valid UTF-8, plus the
 /// observed multibyte prefixes. C0, C1 and F5-FF never appear in valid
-/// UTF-8, so they get no pieces. One-byte prefixes are skipped too: a
-/// one-byte prefix plus a single tiles no better than two singles.
+/// UTF-8, so they get no pieces. ASCII bytes whose char is already a
+/// required piece are skipped too: the real piece tiles it in one token
+/// with a learned score, so the byte spelling would only duplicate it.
+/// Unseen ASCII (newlines, controls, held-out letters) keeps its byte
+/// single. One-byte prefixes are skipped as well: a one-byte prefix plus a
+/// single tiles no better than two singles.
 fn byte_floor_pieces(required_chars: &AHashSet<String>) -> Vec<String> {
     let mut out: Vec<String> = (0x00u32..=0x7F)
         .chain(0x80..=0xBF)
         .chain(0xC2..=0xF4)
+        .filter(|b| *b >= 0x80 || !required_chars.contains(&((*b as u8) as char).to_string()))
         .map(|b| format!("<0x{b:02X}>"))
         .collect();
     out.extend(prefix_pieces(required_chars));
@@ -511,23 +516,24 @@ mod tests {
     fn test_finalize_counts_the_byte_floor_in_the_budget() {
         let model = Unigram::from(vec![("a".into(), 0.0)], None, false).unwrap();
         let chars: AHashSet<String> = ["a".to_string()].into_iter().collect();
-        // 1 required + 243 singles, no prefixes from a one-byte char.
-        let out = finalize(244, &[], &None, &model, chars).unwrap();
+        // 1 required + 242 singles (`<0x61>` skipped: `a` tiles it already),
+        // no prefixes from a one-byte char.
+        let out = finalize(243, &[], &None, &model, chars).unwrap();
         assert!(out.byte_fallback());
         let spellings: Vec<&str> = out.iter().map(|(t, _)| t.as_str()).collect();
-        assert_eq!(spellings.len(), 244);
+        assert_eq!(spellings.len(), 243);
         assert!(spellings.contains(&"<0x00>"));
         assert!(spellings.contains(&"<0x7F>"));
         assert!(spellings.contains(&"<0x80>"));
         assert!(spellings.contains(&"<0xBF>"));
         assert!(spellings.contains(&"<0xC2>"));
         assert!(spellings.contains(&"<0xF4>"));
-        for missing in ["<0xC0>", "<0xC1>", "<0xF5>", "<0xFF>"] {
+        for missing in ["<0x61>", "<0xC0>", "<0xC1>", "<0xF5>", "<0xFF>"] {
             assert!(!spellings.contains(&missing), "{missing} must be absent");
         }
         // One slot short of required + floor: fail, don't overshoot.
         let chars: AHashSet<String> = ["a".to_string()].into_iter().collect();
-        assert!(finalize(243, &[], &None, &model, chars).is_err());
+        assert!(finalize(242, &[], &None, &model, chars).is_err());
     }
 
     #[test]
