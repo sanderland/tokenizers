@@ -86,7 +86,6 @@ fn train(marking: &MarkBoundaries) -> Result<Unigram, Box<dyn Error + Send + Syn
         .vocab_size(400)
         .seed_size(500)
         .seed_init(SeedInit::Bpe)
-        .unk_token(Some("<unk>".into()))
         .build()
         .unwrap();
     let mut model = Unigram::default();

@@ -45,8 +45,6 @@ pub struct MinGramTrainer {
     pub special_tokens: Vec<AddedToken>,
     pub initial_alphabet: AHashSet<char>,
 
-    pub unk_token: Option<String>,
-
     pub max_piece_length: usize,
     seed_size: Option<usize>,
     pub seed_init: SeedInit,
@@ -65,7 +63,6 @@ pub struct MinGramTrainerBuilder {
     n_sub_iterations: Option<u32>,
     special_tokens: Option<Vec<AddedToken>>,
     initial_alphabet: Option<AHashSet<char>>,
-    unk_token: Option<Option<String>>,
     max_piece_length: Option<usize>,
     seed_size: Option<usize>,
     seed_init: Option<SeedInit>,
@@ -98,11 +95,6 @@ impl MinGramTrainerBuilder {
 
     pub fn initial_alphabet(&mut self, initial_alphabet: AHashSet<char>) -> &mut Self {
         self.initial_alphabet = Some(initial_alphabet);
-        self
-    }
-
-    pub fn unk_token(&mut self, unk_token: Option<String>) -> &mut Self {
-        self.unk_token = Some(unk_token);
         self
     }
 
@@ -155,7 +147,6 @@ impl MinGramTrainerBuilder {
             n_sub_iterations: self.n_sub_iterations.unwrap_or(2),
             special_tokens: self.special_tokens.clone().unwrap_or_default(),
             initial_alphabet: self.initial_alphabet.clone().unwrap_or_default(),
-            unk_token: self.unk_token.clone().unwrap_or(None),
             max_piece_length: self.max_piece_length.unwrap_or(16),
             seed_size: self.seed_size,
             seed_init: self.seed_init.unwrap_or(SeedInit::Bpe),
@@ -625,7 +616,8 @@ impl MinGramTrainer {
         let mut pieces: Vec<SentencePiece> =
             Vec::with_capacity(self.vocab_size.try_into().unwrap());
 
-        // We use a UNK token when training, whatever the `self.unk_token`
+        // An internal UNK seeds training; finalize drops it, and the output
+        // carries no unk token.
         pieces.push(("<UNK>".into(), f64::NAN));
         pieces.extend(seed::make_seed_pieces(
             &sentences,
@@ -691,10 +683,12 @@ impl MinGramTrainer {
         new_model = Unigram::from(pieces.clone(), Some(0), false)?;
 
         // 4. Adjust the size of sentencepieces to be |vocab_size|.
+        // No unk token: the hardcoded alphabet plus the byte floor cover
+        // every input, and genuine failure stays an error (MissingUnkId).
         *model = seed::finalize(
             self.vocab_size,
             &self.special_tokens,
-            &self.unk_token,
+            &None,
             &new_model,
             required_chars,
         )?;
