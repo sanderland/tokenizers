@@ -243,8 +243,27 @@ fn make_bpe_seed_pieces(
     Err("seed_init=\"bpe\" needs tk-train's `bpe` feature".into())
 }
 
-/// Characters that must survive training: every char seen in the words plus
-/// the initial alphabet.
+/// The hardcoded alphabet: all 128 ASCII chars plus the boundary marks.
+/// ASCII coverage never depends on the corpus again (newlines, controls and
+/// held-out letters always have real pieces), and the byte floor skips ASCII
+/// entirely. Observed non-ASCII chars join through the caller below.
+const HARDCODED_ALPHABET: [char; 133] = {
+    let mut out = ['\0'; 133];
+    let mut i = 0;
+    while i < 128 {
+        out[i] = i as u8 as char;
+        i += 1;
+    }
+    out[128] = '\u{FDD0}';
+    out[129] = '\u{FDD1}';
+    out[130] = '\u{FDD2}';
+    out[131] = '\u{FDD3}';
+    out[132] = '\u{FDD4}';
+    out
+};
+
+/// Characters that must survive training: the hardcoded alphabet, every
+/// char seen in the words, plus the initial alphabet.
 pub(crate) fn required_chars(
     word_counts: &[Sentence],
     initial_alphabet: &AHashSet<char>,
@@ -253,6 +272,7 @@ pub(crate) fn required_chars(
         .iter()
         .flat_map(|(s, _count)| s.chars())
         .chain(initial_alphabet.iter().copied())
+        .chain(HARDCODED_ALPHABET)
         .map(|c| c.to_string())
         .collect()
 }
@@ -276,19 +296,15 @@ fn prefix_pieces(required_chars: &AHashSet<String>) -> Vec<String> {
     prefixes
 }
 
-/// The byte floor: the 243 byte values that occur in valid UTF-8, plus the
-/// observed multibyte prefixes. C0, C1 and F5-FF never appear in valid
-/// UTF-8, so they get no pieces. ASCII bytes whose char is already a
-/// required piece are skipped too: the real piece tiles it in one token
-/// with a learned score, so the byte spelling would only duplicate it.
-/// Unseen ASCII (newlines, controls, held-out letters) keeps its byte
-/// single. One-byte prefixes are skipped as well: a one-byte prefix plus a
-/// single tiles no better than two singles.
+/// The byte floor: the multibyte bytes that occur in valid UTF-8
+/// (`80-BF`, `C2-F4`; `C0`, `C1` and `F5-FF` never appear), plus the
+/// observed multibyte prefixes. ASCII needs no byte spellings: every ASCII
+/// char is a required piece and tiles in one token with a real or
+/// backfilled score. One-byte prefixes are skipped as well: a one-byte
+/// prefix plus a single tiles no better than two singles.
 fn byte_floor_pieces(required_chars: &AHashSet<String>) -> Vec<String> {
-    let mut out: Vec<String> = (0x00u32..=0x7F)
-        .chain(0x80..=0xBF)
+    let mut out: Vec<String> = (0x80u32..=0xBF)
         .chain(0xC2..=0xF4)
-        .filter(|b| *b >= 0x80 || !required_chars.contains(&((*b as u8) as char).to_string()))
         .map(|b| format!("<0x{b:02X}>"))
         .collect();
     out.extend(prefix_pieces(required_chars));
@@ -516,24 +532,23 @@ mod tests {
     fn test_finalize_counts_the_byte_floor_in_the_budget() {
         let model = Unigram::from(vec![("a".into(), 0.0)], None, false).unwrap();
         let chars: AHashSet<String> = ["a".to_string()].into_iter().collect();
-        // 1 required + 242 singles (`<0x61>` skipped: `a` tiles it already),
-        // no prefixes from a one-byte char.
-        let out = finalize(243, &[], &None, &model, chars).unwrap();
+        // 1 required + 115 multibyte singles (ASCII needs no byte
+        // spellings), no prefixes from a one-byte char.
+        let out = finalize(116, &[], &None, &model, chars).unwrap();
         assert!(out.byte_fallback());
         let spellings: Vec<&str> = out.iter().map(|(t, _)| t.as_str()).collect();
-        assert_eq!(spellings.len(), 243);
-        assert!(spellings.contains(&"<0x00>"));
-        assert!(spellings.contains(&"<0x7F>"));
-        assert!(spellings.contains(&"<0x80>"));
-        assert!(spellings.contains(&"<0xBF>"));
-        assert!(spellings.contains(&"<0xC2>"));
-        assert!(spellings.contains(&"<0xF4>"));
-        for missing in ["<0x61>", "<0xC0>", "<0xC1>", "<0xF5>", "<0xFF>"] {
+        assert_eq!(spellings.len(), 116);
+        for piece in ["<0x80>", "<0xBF>", "<0xC2>", "<0xF4>"] {
+            assert!(spellings.contains(&piece), "missing {piece}");
+        }
+        for missing in [
+            "<0x00>", "<0x0A>", "<0x61>", "<0x7F>", "<0xC0>", "<0xC1>", "<0xF5>", "<0xFF>",
+        ] {
             assert!(!spellings.contains(&missing), "{missing} must be absent");
         }
         // One slot short of required + floor: fail, don't overshoot.
         let chars: AHashSet<String> = ["a".to_string()].into_iter().collect();
-        assert!(finalize(242, &[], &None, &model, chars).is_err());
+        assert!(finalize(115, &[], &None, &model, chars).is_err());
     }
 
     #[test]
@@ -541,15 +556,21 @@ mod tests {
         use std::iter::FromIterator;
         let sentences = vec![("こんにちは友達".to_string(), 1)];
         let alphabet = AHashSet::from_iter(vec!['a', 'b', 'c', 'd', 'e', 'f']);
-        assert_eq!(
-            required_chars(&sentences, &alphabet),
-            vec![
-                "こ", "ん", "に", "ち", "は", "友", "達", "a", "b", "c", "d", "e", "f"
-            ]
-            .into_iter()
-            .map(|s| s.to_owned())
-            .collect::<AHashSet<_>>()
-        );
+        let required = required_chars(&sentences, &alphabet);
+        // Observed non-ASCII plus the initial alphabet survive…
+        for c in [
+            "こ", "ん", "に", "ち", "は", "友", "達", "a", "b", "c", "d", "e", "f",
+        ] {
+            assert!(required.contains(c), "missing {c}");
+        }
+        // …alongside the hardcoded alphabet: full ASCII and the marks.
+        for c in [
+            "\0", "\n", "q", "\u{FDD0}", "\u{FDD1}", "\u{FDD2}", "\u{FDD3}", "\u{FDD4}",
+        ] {
+            assert!(required.contains(c), "missing {c:?}");
+        }
+        // 7 observed + 128 ASCII (initials included) + 5 marks.
+        assert_eq!(required.len(), 140);
     }
 
     #[test]

@@ -1044,9 +1044,8 @@ mod tests {
         let spellings: Vec<&str> = once.iter().map(|(t, _)| t.as_str()).collect();
         // 日 E697A5 -> E697; 🎉 F09F8E89 -> F09F, F09F8E.
         for piece in [
-            "<0x00>",
-            "<0x0A>",
-            "<0x71>",
+            "<0x80>",
+            "<0xC2>",
             "<0xF4>",
             "<0xE697>",
             "<0xF09F>",
@@ -1054,9 +1053,15 @@ mod tests {
         ] {
             assert!(spellings.contains(&piece), "missing {piece}");
         }
-        // Seen ASCII keeps its real piece: `h` tiles `<0x68>` already.
-        for missing in ["<0x68>", "<0xC0>", "<0xC1>", "<0xF5>", "<0xFF>"] {
+        // ASCII needs no byte spellings: every ASCII char is a real piece,
+        // seen or not.
+        for missing in [
+            "<0x00>", "<0x0A>", "<0x68>", "<0x71>", "<0xC0>", "<0xC1>", "<0xF5>", "<0xFF>",
+        ] {
             assert!(!spellings.contains(&missing), "{missing} must be absent");
+        }
+        for piece in ["q", "\n", "h"] {
+            assert!(spellings.contains(&piece), "missing real piece {piece:?}");
         }
         assert_eq!(train(), once);
     }
