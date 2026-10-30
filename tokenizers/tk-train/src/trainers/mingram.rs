@@ -604,6 +604,32 @@ impl MinGramTrainer {
         Ok(model_pieces.into_iter().skip(1).collect())
     }
 
+    /// Trim scored pieces to `target_size` by minimum increase (script_tok
+    /// MinGram-PP): drop the non-single pieces whose removal adds the
+    /// fewest extra tokens, lowest MI first with usage-score tiebreak. The
+    /// fixed-vocab counterpart of the trainer's prune step: rescore a given
+    /// vocabulary with [`em_scores`](Self::em_scores), then trim it,
+    /// instead of training from a seed.
+    pub fn mingram_pp_trim(
+        &self,
+        pieces: &[(String, f64)],
+        sentences: &[(String, u32)],
+        target_size: usize,
+    ) -> Result<Vec<(String, f64)>> {
+        let with_unk: Vec<SentencePiece> = std::iter::once(("<UNK>".into(), f64::NAN))
+            .chain(pieces.iter().cloned())
+            .collect();
+        let model = Unigram::from(with_unk.clone(), Some(0), false)?;
+        let kept = mi_prune(
+            &with_unk,
+            sentences,
+            &model,
+            target_size + 1,
+            self.skip_substring_in_batch,
+        );
+        Ok(kept.into_iter().skip(1).collect())
+    }
+
     pub fn do_train(
         &self,
         sentences: Vec<Sentence>,
@@ -899,6 +925,21 @@ mod tests {
         assert_approx_eq!(scored[1].1, (0.5_f64 / total).ln(), 1e-9);
         assert_approx_eq!(scored[2].1, (3.0_f64 / total).ln(), 1e-9);
         assert!(scored.iter().all(|(_, s)| s.is_finite()));
+    }
+
+    #[test]
+    fn test_mingram_pp_trim_keeps_singles_and_hits_size() {
+        let trainer = MinGramTrainer::builder().build().unwrap();
+        let scored = [("a", -1.0), ("b", -2.0), ("ab", -0.5), ("bc", -3.0)]
+            .into_iter()
+            .map(|(p, s)| (p.to_string(), s))
+            .collect::<Vec<_>>();
+        let sentences = vec![("ab".to_string(), 3), ("bc".to_string(), 1)];
+        let trimmed = trainer.mingram_pp_trim(&scored, &sentences, 3).unwrap();
+        let spellings: Vec<&str> = trimmed.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(trimmed.len(), 3);
+        assert!(spellings.contains(&"a"));
+        assert!(spellings.contains(&"b"));
     }
 
     #[test]
