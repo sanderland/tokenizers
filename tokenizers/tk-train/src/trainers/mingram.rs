@@ -736,6 +736,7 @@ impl MinGramTrainer {
         sentences: Vec<Sentence>,
         model: &mut Unigram,
     ) -> Result<Vec<AddedToken>> {
+        seed::validate_alphabet(&sentences, &self.initial_alphabet, self.alphabet_mode)?;
         if let Some(policy) = self.fixed_digits {
             let prepared = super::fixed_digits::prepare(
                 sentences,

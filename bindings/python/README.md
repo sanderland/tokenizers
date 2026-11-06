@@ -107,8 +107,10 @@ post-processing configuration, and trains on the same normalized spans used
 at encoding time. Iterator training currently collects the corpus in memory.
 
 Use `alphabet_mode="byte_level"` with any trainer to train
-on the reversible 256-symbol byte alphabet, with the corresponding normalizer
-and decoder installed on a newly created tokenizer. `"legacy"` retains the
+on the 243 mapped byte symbols that occur in valid UTF-8, with the corresponding normalizer
+and decoder installed on a newly created tokenizer. Bytes C0, C1 and F5–FF
+are excluded; the general byte mapping and existing models remain unchanged.
+`"legacy"` retains the
 original Unigram character alphabet; `"utf8"` selects the UTF-8 fallback
 inventory. `initial_alphabet` accepts additional required single characters.
 

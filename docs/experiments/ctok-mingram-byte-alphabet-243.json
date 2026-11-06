@@ -1,0 +1,51 @@
+{
+  "source_sha256": "7502a15923c4c9dddad31ecf844bdd1ccdeaf53cccea2a09c71771a8b5faba38",
+  "holdout_sha256": "6d64fc9ee52243ca0e438d5841b82f15f3bfc65df4d51019f8615459fecb7e65",
+  "old_rust_utf8_test_tokens": 79542,
+  "seed_factor": 1.1,
+  "vocab_size": 4096,
+  "byte_alphabet_size": 243,
+  "reference_243_bpe": {
+    "actual_size": 4096,
+    "test_tokens": 79705
+  },
+  "reference_243_mingram": {
+    "actual_size": 4096,
+    "test_tokens": 79180
+  },
+  "results": [
+    {
+      "max_piece_length_bytes": 16,
+      "actual_size": 4096,
+      "test_tokens": 79228,
+      "invalid_multibyte_pieces": 0,
+      "gain_vs_reference_243_bpe_pct": 0.5984568094849707,
+      "gain_vs_reference_256_bpe_pct": 0.6196532952008282
+    },
+    {
+      "max_piece_length_bytes": 64,
+      "actual_size": 4096,
+      "test_tokens": 79192,
+      "invalid_multibyte_pieces": 0,
+      "gain_vs_reference_243_bpe_pct": 0.6436233611442188,
+      "gain_vs_reference_256_bpe_pct": 0.6648102154988567
+    },
+    {
+      "max_piece_length_bytes": 256,
+      "actual_size": 4096,
+      "test_tokens": 79180,
+      "invalid_multibyte_pieces": 0,
+      "gain_vs_reference_243_bpe_pct": 0.6586788783639719,
+      "gain_vs_reference_256_bpe_pct": 0.6798625222648735
+    }
+  ],
+  "caveats": [
+    "Same NFC and GPT4O regex chunks; Rust sees a reversible mapping of their UTF-8 bytes.",
+    "Rust BPE and script_tok BPE can choose different merges on equal frequencies.",
+    "Length counts byte atoms in this alphabet, not Unicode codepoints.",
+    "The original reference counts used 256 atoms; reference_243 removes the 13 impossible bytes from its required inventory while preserving byte IDs and using the standard save/load path.",
+    "This fixture is not the paper corpus."
+  ],
+  "reference_256_bpe_test_tokens": 79722,
+  "reference_256_mingram_test_tokens": 79045
+}

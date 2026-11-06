@@ -134,3 +134,35 @@ def test_bpe_rejects_unsupported_fixed_digits():
     trainer = trainers.BpeTrainer(vocab_size=300, fixed_digits="single", show_progress=False)
     with pytest.raises(ValueError, match="requires a Unigram or MinGram trainer"):
         trainer.train_from_iterator(["hello 123"])
+
+
+def test_utf8_byte_alphabet_has_exactly_243_entries(tmp_path):
+    import json
+
+    printable = list(range(33, 127)) + list(range(161, 173)) + list(range(174, 256))
+    mapping = {b: chr(b) for b in printable}
+    for index, byte in enumerate(b for b in range(256) if b not in mapping):
+        mapping[byte] = chr(256 + index)
+    expected = {mapping[b] for b in range(256) if b <= 0xBF or 0xC2 <= b <= 0xF4}
+    assert len(expected) == 243
+    for cls in (trainers.BpeTrainer, trainers.UnigramTrainer, trainers.MinGramTrainer):
+        tokenizer = cls(vocab_size=243, alphabet_mode="byte_level", show_progress=False).train_from_iterator(["hello"])
+        path = tmp_path / "243.json"
+        tokenizer.save(path)
+        vocab = json.loads(path.read_text())["model"]["vocab"]
+        spellings = set(vocab) if isinstance(vocab, dict) else {entry[0] for entry in vocab}
+        assert spellings == expected
+        loaded = Tokenizer.from_file(path)
+        for text in ("unseen 🦊", "\x00\n", "\u0080\u07ff\u0800\uffff\U00010000\U0010ffff"):
+            assert loaded.decode(loaded.encode(text).ids) == text
+
+
+def test_impossible_utf8_bytes_cannot_expand_initial_alphabet():
+    import pytest
+
+    for cls in (trainers.BpeTrainer, trainers.UnigramTrainer, trainers.MinGramTrainer):
+        for symbol in ("À", "Á", "õ", "ÿ"):
+            with pytest.raises(ValueError, match="mapped UTF-8 bytes"):
+                cls(
+                    vocab_size=300, alphabet_mode="byte_level", initial_alphabet=[symbol], show_progress=False
+                ).train_from_iterator(["hello"])

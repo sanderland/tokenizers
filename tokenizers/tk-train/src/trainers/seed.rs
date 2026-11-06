@@ -40,7 +40,7 @@ pub enum AlphabetMode {
     Legacy,
     /// Observed characters plus the UTF-8 fallback inventory.
     Utf8,
-    /// The 256-symbol reversible GPT-2 byte alphabet.
+    /// The 243 symbols for bytes occurring in valid UTF-8, using the GPT-2 mapping.
     ByteLevel,
 }
 
@@ -292,6 +292,31 @@ const HARDCODED_ALPHABET: [char; 133] = {
     out
 };
 
+/// Byte-alphabet training consumes already mapped UTF-8 bytes. Reject
+/// foreign symbols and impossible bytes instead of silently enlarging its floor.
+pub(crate) fn validate_alphabet(
+    sentences: &[Sentence],
+    initial: &AHashSet<char>,
+    mode: AlphabetMode,
+) -> Result<()> {
+    if mode != AlphabetMode::ByteLevel {
+        return Ok(());
+    }
+    let allowed: AHashSet<char> = tk_encode::utils::byte_level::utf8_byte_alphabet().collect();
+    if sentences
+        .iter()
+        .flat_map(|(s, _)| s.chars())
+        .chain(initial.iter().copied())
+        .any(|c| !allowed.contains(&c))
+    {
+        return Err(
+            "byte_level training requires mapped UTF-8 bytes; alphabet excludes C0, C1 and F5..FF"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// Characters that must survive training: the hardcoded alphabet, every
 /// char seen in the words, plus the initial alphabet.
 pub(crate) fn required_chars(
@@ -302,7 +327,7 @@ pub(crate) fn required_chars(
     let extra: Vec<char> = match mode {
         AlphabetMode::Legacy => vec![],
         AlphabetMode::Utf8 => HARDCODED_ALPHABET.to_vec(),
-        AlphabetMode::ByteLevel => tk_encode::utils::byte_level::BYTES_CHAR_LOOKUP.to_vec(),
+        AlphabetMode::ByteLevel => tk_encode::utils::byte_level::utf8_byte_alphabet().collect(),
     };
     word_counts
         .iter()
@@ -466,12 +491,31 @@ mod tests {
         let legacy = required_chars(&sentences, &initial, AlphabetMode::Legacy);
         let bytes = required_chars(&sentences, &initial, AlphabetMode::ByteLevel);
         assert_eq!(legacy.len(), 3);
-        assert_eq!(bytes.len(), 256);
+        assert_eq!(bytes.len(), 243);
         let model = Unigram::from(vec![("a".into(), 0.0)], None, false).unwrap();
-        let result = finalize(256, &[], &None, &model, bytes, AlphabetMode::ByteLevel).unwrap();
-        assert_eq!(result.len(), 256);
+        let result = finalize(243, &[], &None, &model, bytes, AlphabetMode::ByteLevel).unwrap();
+        assert_eq!(result.len(), 243);
+        for byte in [0xC0, 0xC1, 0xF5, 0xFF] {
+            let symbol = tk_encode::utils::byte_level::BYTES_CHAR_LOOKUP[byte].to_string();
+            assert!(result.token_to_id(&symbol).is_none());
+        }
         assert!(!result.byte_fallback());
         assert!(result.token_to_id("<0x80>").is_none());
+    }
+
+    #[test]
+    fn byte_alphabet_rejects_impossible_bytes_and_foreign_symbols() {
+        let initial = AHashSet::new();
+        for text in ["À", "Á", "õ", "ÿ", "🦊"] {
+            assert!(
+                validate_alphabet(&[(text.to_owned(), 1)], &initial, AlphabetMode::ByteLevel)
+                    .is_err()
+            );
+        }
+        let invalid = [tk_encode::utils::byte_level::BYTES_CHAR_LOOKUP[0xC0]]
+            .into_iter()
+            .collect();
+        assert!(validate_alphabet(&[], &invalid, AlphabetMode::ByteLevel).is_err());
     }
 
     #[test]

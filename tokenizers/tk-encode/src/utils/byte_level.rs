@@ -39,6 +39,14 @@ pub fn char_to_byte(c: char) -> Option<u8> {
     *CHAR_BYTES_LOOKUP.get(c as usize)?
 }
 
+/// The 243 mapped byte symbols that can occur in valid UTF-8 text.
+/// Excludes C0, C1 and F5..FF; the general 256-byte mapping is unchanged.
+pub fn utf8_byte_alphabet() -> impl Iterator<Item = char> {
+    (0u8..=0xBF)
+        .chain(0xC2..=0xF4)
+        .map(|byte| BYTES_CHAR_LOOKUP[byte as usize])
+}
+
 /// Whether mapped bytes form complete UTF-8, or a leading prefix of a
 /// single UTF-8 character. Used to constrain byte-alphabet training pieces.
 pub fn is_utf8_complete_or_prefix(piece: &str) -> bool {

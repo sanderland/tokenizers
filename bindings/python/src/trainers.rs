@@ -209,7 +209,14 @@ pub fn train(
                 let mut bpe_alphabet: std::collections::HashSet<char> =
                     initial_alphabet.iter().copied().collect();
                 if byte_level {
-                    bpe_alphabet.extend(ByteLevel::alphabet());
+                    let allowed: std::collections::HashSet<char> =
+                        tk::utils::byte_level::utf8_byte_alphabet().collect();
+                    if !bpe_alphabet.is_subset(&allowed) {
+                        return Err(PyValueError::new_err(
+                            "byte_level initial_alphabet must contain mapped UTF-8 bytes",
+                        ));
+                    }
+                    bpe_alphabet.extend(allowed);
                     if (vocab_size as usize) < bpe_alphabet.len() + special.len() {
                         return Err(PyValueError::new_err(
                             "vocab_size is too small for the byte alphabet and special tokens",

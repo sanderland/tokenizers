@@ -5,15 +5,43 @@ Reviewed on 2026-11-06. Branch `ctok-mingram`, based on
 `sanderland/ctok` at `8c43ffd` and `sanderland/script_tok` at `7e7dc03`.
 
 The second pass adds Python training, selectable alphabets for both Unigram
-trainers, and fixed ASCII digit inventories. The controlled Rosetta comparison
-now gets **0.845%** compression gain with Rust byte-alphabet MinGram versus
-**0.849%** with `script_tok`; the earlier UTF-8 character-inventory path got
-0.226%. These are local fixture results, not the paper's full evaluation.
+trainers, and fixed ASCII digit inventories. Byte-alphabet training now reserves
+only the **243** bytes that occur in valid UTF-8. On the controlled Rosetta
+comparison, Rust and `script_tok` both emit **79,180** held-out tokens,
+a **0.659%** gain over the matching BPE baseline. These are local fixture
+results, not the paper's full evaluation.
 
 ## Compression gap investigation
 
 Same 1,741 training documents, separate 250-document holdout, NFC + GPT4O regex,
 4,096 total vocabulary entries, and seed factor 1.1. Lower token counts win.
+
+### Current 243-byte inventory
+
+| Model / piece limit | Holdout tokens | Gain over 243-byte reference BPE |
+| --- | ---: | ---: |
+| Reference BPE | 79,705 | — |
+| Reference MinGram | 79,180 | 0.659% |
+| Rust MinGram, 16 bytes | 79,228 | 0.598% |
+| Rust MinGram, 64 bytes | 79,192 | 0.644% |
+| Rust MinGram, 256 bytes | 79,180 | 0.659% |
+
+All models return exactly 4,096 entries. The comparison removes the 13
+impossible bytes from `script_tok`'s required atoms while preserving byte IDs
+and the standard save/load evaluation path. Rust's alphabet contains exactly
+243 single-byte pieces, with no invalid UTF-8 merge pieces. The generic byte
+mapping and loading of existing 256-byte models remain unchanged.
+
+Freeing 13 slots does not guarantee better held-out compression: it also changes
+the BPE seed cap, merges and subsequent hard-EM/pruning decisions. The earlier
+256-byte MinGram models performed better on this particular holdout. The
+matching 243-byte Rust/reference counts provide the relevant implementation
+comparison after this correction.
+
+### Historical 256-byte comparison and character-inventory ablations
+
+The following results precede the 243-byte correction; both byte-alphabet
+implementations used all 256 atoms here.
 
 | Model / controlled change | Holdout tokens | Gain over reference BPE |
 | --- | ---: | ---: |
@@ -38,12 +66,15 @@ instead of zero changed no held-out token counts in isolation. The effects
 interact: they must not be added as independent contributions. The nearly
 matching byte-alphabet result confirms that inventory policy and length
 restrictions, rather than a missing UTF-8 encoding capability, account for
-most of the gap. The remaining three-token difference has not been isolated;
-seed frequency ties and scoring ties can still differ.
+most of the gap. The remaining three-token difference in this historical
+256-byte comparison was not isolated; seed frequency ties and scoring ties
+can still differ. With the current 243-byte inventory and relaxed length
+limit, the aggregate token-count difference is zero.
 
 Raw results and executable comparisons:
 [reference ablations](experiments/ctok-mingram-gap.json),
-[byte-alphabet comparison](experiments/ctok-mingram-byte-alphabet.json),
+[historical 256-byte comparison](experiments/ctok-mingram-byte-alphabet.json),
+[current 243-byte comparison](experiments/ctok-mingram-byte-alphabet-243.json),
 [investigation script](../scripts/investigate_mingram_gap.py), and
 [byte comparison script](../scripts/compare_mingram_byte_alphabet.py).
 
@@ -55,8 +86,10 @@ Both `UnigramTrainer` and `MinGramTrainer` accept the same `alphabet_mode`:
   ASCII/marker inventory or byte fallbacks. Default for plain Unigram.
 - `utf8`: the earlier character inventory plus byte/prefix fallback pieces.
   Default for MinGram and used by the Claude example.
-- `byte_level`: all 256 reversible GPT-2 byte symbols, with no separate
-  `<0x…>` floor or requirement to preserve full observed characters.
+- `byte_level`: the 243 reversible GPT-2 symbols for bytes occurring in valid
+  UTF-8, with no separate `<0x…>` floor or requirement to preserve full observed
+  characters. C0, C1 and F5–FF are excluded. Training rejects impossible bytes
+  or foreign symbols in a manually supplied mapped corpus or initial alphabet.
 
 Byte-alphabet BPE seeds only merge complete UTF-8 or a leading prefix of one
 character. Thus partial characters merge left to right before joining adjacent
@@ -305,8 +338,8 @@ or downstream language-model results.
 
 ## Verification after the second pass
 
-359 Rust unit tests pass across encoder, serializer and trainers; two fixture-based
-tests are ignored. Eleven Python trainer tests pass, covering both Unigram
+360 Rust unit tests pass across encoder, serializer and trainers; two fixture-based
+tests are ignored. Thirteen Python trainer tests pass, covering both Unigram
 alphabets, fixed inventories, serialization, existing preprocessing, byte-level
 BPE, and atomic failure when retraining would invalidate a postprocessor.
 The Claude example round-trips all digit policies through save/load. A minimal
