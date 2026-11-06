@@ -1,4 +1,4 @@
-use super::seed::{self, SeedInit, Sentence, SentencePiece};
+use super::seed::{self, AlphabetMode, SeedInit, Sentence, SentencePiece};
 use crate::Trainer;
 use crate::progress::{ProgressBar, ProgressStyle};
 use ahash::{AHashMap, AHashSet};
@@ -43,6 +43,10 @@ pub struct UnigramTrainer {
     #[serde(with = "crate::added_token_serde")]
     pub special_tokens: Vec<AddedToken>,
     pub initial_alphabet: AHashSet<char>,
+    #[serde(default)]
+    pub alphabet_mode: AlphabetMode,
+    #[serde(default, with = "super::fixed_digits::serde_policy")]
+    pub fixed_digits: Option<tk_encode::pre_tokenizers::fixed_digits::FixedDigits>,
 
     pub unk_token: Option<String>,
 
@@ -62,6 +66,8 @@ pub struct UnigramTrainerBuilder {
     shrinking_factor: Option<f64>,
     special_tokens: Option<Vec<AddedToken>>,
     initial_alphabet: Option<AHashSet<char>>,
+    alphabet_mode: Option<AlphabetMode>,
+    fixed_digits: Option<tk_encode::pre_tokenizers::fixed_digits::FixedDigits>,
     unk_token: Option<Option<String>>,
     max_piece_length: Option<usize>,
     seed_size: Option<usize>,
@@ -92,6 +98,19 @@ impl UnigramTrainerBuilder {
 
     pub fn special_tokens(&mut self, special_tokens: Vec<AddedToken>) -> &mut Self {
         self.special_tokens = Some(special_tokens);
+        self
+    }
+
+    pub fn fixed_digits(
+        &mut self,
+        policy: Option<tk_encode::pre_tokenizers::fixed_digits::FixedDigits>,
+    ) -> &mut Self {
+        self.fixed_digits = policy;
+        self
+    }
+
+    pub fn alphabet_mode(&mut self, mode: AlphabetMode) -> &mut Self {
+        self.alphabet_mode = Some(mode);
         self
     }
 
@@ -133,6 +152,8 @@ impl UnigramTrainerBuilder {
             shrinking_factor: self.shrinking_factor.unwrap_or(0.75),
             special_tokens: self.special_tokens.clone().unwrap_or_default(),
             initial_alphabet: self.initial_alphabet.clone().unwrap_or_default(),
+            fixed_digits: self.fixed_digits,
+            alphabet_mode: self.alphabet_mode.unwrap_or(AlphabetMode::Legacy),
             unk_token: self.unk_token.clone().unwrap_or(None),
             max_piece_length: self.max_piece_length.unwrap_or(16),
             seed_size: self.seed_size,
@@ -425,6 +446,32 @@ impl UnigramTrainer {
         sentences: Vec<Sentence>,
         model: &mut Unigram,
     ) -> Result<Vec<AddedToken>> {
+        if let Some(policy) = self.fixed_digits {
+            let prepared = super::fixed_digits::prepare(
+                sentences,
+                &self.initial_alphabet,
+                self.alphabet_mode,
+                policy,
+                self.vocab_size,
+                &self.special_tokens,
+            )?;
+            let mut trainer = self.clone();
+            trainer.fixed_digits = None;
+            trainer.vocab_size = prepared.vocab_size;
+            trainer.initial_alphabet = prepared.alphabet.clone();
+            if prepared.sentences.is_empty() {
+                *model = super::fixed_digits::empty_model(
+                    &prepared,
+                    self.alphabet_mode,
+                    &self.special_tokens,
+                    &self.unk_token,
+                )?;
+            } else {
+                trainer.do_train(prepared.sentences.clone(), model)?;
+            }
+            super::fixed_digits::finish(model, prepared)?;
+            return Ok(self.special_tokens.clone());
+        }
         let progress = self.setup_progress();
         //
         // 1. Compute frequent substrings
@@ -441,6 +488,7 @@ impl UnigramTrainer {
             self.seed_size.unwrap_or(seed::DEFAULT_SEED_SIZE),
             self.max_piece_length,
             &self.initial_alphabet,
+            self.alphabet_mode,
             &progress,
         )?);
         self.finalize_progress(&progress, sentences.len());
@@ -464,7 +512,8 @@ impl UnigramTrainer {
             + 1;
         let expected_updates = expected_loops * self.n_sub_iterations as usize;
         self.update_progress(&progress, expected_updates, "EM training");
-        let required_chars = seed::required_chars(&sentences, &self.initial_alphabet);
+        let required_chars =
+            seed::required_chars(&sentences, &self.initial_alphabet, self.alphabet_mode);
         if required_chars.len() as u32 > self.vocab_size {
             return Err(Box::new(UnigramTrainerError::VocabularyTooSmall));
         }
@@ -512,6 +561,7 @@ impl UnigramTrainer {
             &self.unk_token,
             &new_model,
             required_chars,
+            self.alphabet_mode,
         )?;
 
         Ok(self.special_tokens.clone())
@@ -697,6 +747,7 @@ mod tests {
         };
         let trainer = UnigramTrainer::builder()
             .show_progress(false)
+            .alphabet_mode(AlphabetMode::Utf8)
             .vocab_size(300)
             .seed_size(40)
             .build()

@@ -39,6 +39,18 @@ pub fn char_to_byte(c: char) -> Option<u8> {
     *CHAR_BYTES_LOOKUP.get(c as usize)?
 }
 
+/// Whether mapped bytes form complete UTF-8, or a leading prefix of a
+/// single UTF-8 character. Used to constrain byte-alphabet training pieces.
+pub fn is_utf8_complete_or_prefix(piece: &str) -> bool {
+    let Some(bytes): Option<Vec<u8>> = piece.chars().map(char_to_byte).collect() else {
+        return false;
+    };
+    match std::str::from_utf8(&bytes) {
+        Ok(_) => true,
+        Err(error) => error.valid_up_to() == 0 && error.error_len().is_none(),
+    }
+}
+
 fn make_byte_char_lookup() -> [char; 256] {
     let mut lookup: [char; 256] = ['\0'; 256];
 

@@ -20,7 +20,8 @@ use crate::type_hints::{Token, TokenIds};
 /// A tokenizer. Encodes text into token ids, and decodes token ids back into text.
 #[pyclass(frozen, module = "tokenizers")]
 pub struct Tokenizer {
-    pipeline: Pipeline,
+    pipeline: Mutex<Pipeline>,
+    fresh: Mutex<bool>,
     // Needs a mutex so a concurrent thread can access the value while
     // encode is running.
     padding: Mutex<Option<PaddingParams>>,
@@ -28,6 +29,28 @@ pub struct Tokenizer {
 }
 
 impl Tokenizer {
+    pub(crate) fn from_pipeline(pipeline: Pipeline) -> Self {
+        Self {
+            pipeline: Mutex::new(pipeline),
+            fresh: Mutex::new(false),
+            padding: Mutex::new(None),
+            truncation: Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn pipeline(&self) -> PyResult<Pipeline> {
+        Ok(self.pipeline.lock().map_err(poison_err)?.clone())
+    }
+
+    pub(crate) fn training_template(&self) -> PyResult<Option<Pipeline>> {
+        let fresh = *self.fresh.lock().map_err(poison_err)?;
+        if fresh {
+            Ok(None)
+        } else {
+            Ok(Some(self.pipeline()?))
+        }
+    }
+
     fn make_options(
         &self,
         add_special_tokens: bool,
@@ -71,6 +94,66 @@ type UnpickleArguments = (String, Option<Padding>, Option<Truncation>);
 
 #[pymethods]
 impl Tokenizer {
+    /// Create an empty tokenizer for training.
+    #[new]
+    fn new() -> Self {
+        use std::collections::BTreeMap;
+        use tk::pipeline::{PipelineModel, PipelinePostProcessor, PipelinePreTokenizer};
+        use tk::vocab::bucket_added_vocabulary::AddedVocabulary;
+        let result = Self::from_pipeline(Pipeline::from_parts(
+            AddedVocabulary::new(),
+            vec![],
+            PipelinePreTokenizer::None,
+            PipelineModel::Unigram(tk::models::unigram::Unigram::default()),
+            PipelinePostProcessor::default(),
+            None,
+            BTreeMap::new(),
+            None,
+            None,
+        ));
+        *result.fresh.lock().unwrap() = true;
+        result
+    }
+
+    /// Train this tokenizer in place on an iterable of strings.
+    #[pyo3(signature = (iterator, trainer, length=None))]
+    fn train_from_iterator(
+        slf: Py<Self>,
+        py: Python<'_>,
+        iterator: Bound<'_, PyAny>,
+        trainer: Bound<'_, PyAny>,
+        length: Option<usize>,
+    ) -> PyResult<()> {
+        let _ = length;
+        let trained = trainer.call_method1("_train_on", (iterator, slf.clone_ref(py)))?;
+        let trained: PyRef<'_, Self> = trained.extract()?;
+        let pipeline = trained.pipeline()?;
+        if let Some(padding) = pipeline.get_padding() {
+            *slf.borrow(py).padding.lock().map_err(poison_err)? = Some(padding.clone());
+        }
+        *slf.borrow(py).pipeline.lock().map_err(poison_err)? = pipeline;
+        *slf.borrow(py).fresh.lock().map_err(poison_err)? = false;
+        Ok(())
+    }
+
+    /// Train this tokenizer in place from UTF-8 files.
+    fn train(
+        slf: Py<Self>,
+        py: Python<'_>,
+        files: Bound<'_, PyAny>,
+        trainer: Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let trained = trainer.call_method1("_train_on_files", (files, slf.clone_ref(py)))?;
+        let trained: PyRef<'_, Self> = trained.extract()?;
+        let pipeline = trained.pipeline()?;
+        if let Some(padding) = pipeline.get_padding() {
+            *slf.borrow(py).padding.lock().map_err(poison_err)? = Some(padding.clone());
+        }
+        *slf.borrow(py).pipeline.lock().map_err(poison_err)? = pipeline;
+        *slf.borrow(py).fresh.lock().map_err(poison_err)? = false;
+        Ok(())
+    }
+
     /// Loads a `tokenizer.json`.
     ///
     /// Args:
@@ -84,7 +167,8 @@ impl Tokenizer {
         let padding = pipeline.get_padding().cloned();
         let truncation = pipeline.get_truncation().cloned();
         Ok(Self {
-            pipeline,
+            pipeline: Mutex::new(pipeline),
+            fresh: Mutex::new(false),
             padding: Mutex::new(padding),
             truncation: Mutex::new(truncation),
         })
@@ -230,8 +314,9 @@ impl Tokenizer {
             truncation,
         )?;
         // py.detach releases the GIL while encode runs on Rust side
+        let pipeline = self.pipeline()?;
         let encoding = py
-            .detach(|| self.pipeline.encode(input, &options).wait())
+            .detach(|| pipeline.encode(input, &options).wait())
             .map_err(err)?
             .pop()
             .expect("encoding has exactly one element");
@@ -277,10 +362,11 @@ impl Tokenizer {
             padding,
             truncation,
         )?;
+        let pipeline = self.pipeline()?;
         py.detach(|| -> tk::Result<Vec<String>> {
-            let encodings = self.pipeline.encode(input, &options).wait()?;
+            let encodings = pipeline.encode(input, &options).wait()?;
             let ids: Vec<u32> = PipelineToken::cast_slice(encodings[0].ids()).to_vec();
-            Ok(self.pipeline.decode_tokens(&ids, false))
+            Ok(pipeline.decode_tokens(&ids, false))
         })
         .map_err(err)
     }
@@ -324,8 +410,9 @@ impl Tokenizer {
         )?;
         let inputs = Inputs::Batch(inputs.into_iter().map(Input::from).collect());
         // py.detach releases the GIL while encode runs on Rust side
+        let pipeline = self.pipeline()?;
         let encodings = py
-            .detach(|| self.pipeline.encode(inputs, &options).wait())
+            .detach(|| pipeline.encode(inputs, &options).wait())
             .map_err(err)?;
         Ok(encodings.into_iter().map(Encoding::from).collect())
     }
@@ -349,7 +436,8 @@ impl Tokenizer {
     ) -> PyResult<String> {
         let ids = ids.as_slice();
         // py.detach releases the GIL
-        py.detach(|| self.pipeline.decode(ids, skip_special_tokens))
+        let pipeline = self.pipeline()?;
+        py.detach(|| pipeline.decode(ids, skip_special_tokens))
             .map_err(err)
     }
 
@@ -369,14 +457,21 @@ impl Tokenizer {
         py: Python<'_>,
         ids: TokenIds<'_>,
         skip_special_tokens: bool,
-    ) -> Vec<String> {
+    ) -> PyResult<Vec<String>> {
         let ids = ids.as_slice();
-        py.detach(|| self.pipeline.decode_tokens(ids, skip_special_tokens))
+        let pipeline = self.pipeline()?;
+        Ok(py.detach(|| pipeline.decode_tokens(ids, skip_special_tokens)))
+    }
+
+    /// Save this tokenizer as JSON.
+    fn save(&self, path: PathBuf) -> PyResult<()> {
+        let json = tk::to_json(&self.pipeline()?).map_err(err)?;
+        std::fs::write(path, json).map_err(Into::into)
     }
 
     /// Pickle rebuilds a `Tokenizer` by calling `_unpickle` with these arguments.
     fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, UnpickleArguments)> {
-        let json = tk::to_json(&self.pipeline).map_err(err)?;
+        let json = tk::to_json(&self.pipeline()?).map_err(err)?;
         Ok((
             py.get_type::<Self>().getattr("_unpickle")?,
             (json, self.padding()?, self.truncation()?),
@@ -392,14 +487,15 @@ impl Tokenizer {
     ) -> PyResult<Self> {
         let pipeline: Pipeline = tk::from_json(json).map_err(err)?;
         Ok(Self {
-            pipeline,
+            pipeline: Mutex::new(pipeline),
+            fresh: Mutex::new(false),
             padding: Mutex::new(padding.map(|padding| padding.params().clone())),
             truncation: Mutex::new(truncation.map(|trunc| trunc.params().clone())),
         })
     }
 
     fn __repr__(&self) -> PyResult<String> {
-        let file = tk::to_json(&self.pipeline).map_err(err)?;
+        let file = tk::to_json(&self.pipeline()?).map_err(err)?;
         let file = tk::json::Json::parse(&file).map_err(err)?;
         let padding = self
             .padding()?

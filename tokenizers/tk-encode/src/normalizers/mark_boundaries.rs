@@ -538,6 +538,8 @@ pub struct MarkBoundaries {
     /// price" (Token Contributions, Sep 2026). True is the fix and the
     /// default; the ctok family presets set it false to match Claude.
     pub marks_part_of_words: bool,
+    /// Optional fixed ASCII digit policy; None preserves the measured presets.
+    pub fixed_digits: Option<crate::pre_tokenizers::fixed_digits::FixedDigits>,
 }
 
 impl Default for MarkBoundaries {
@@ -547,15 +549,26 @@ impl Default for MarkBoundaries {
         Self {
             allcaps_min: Some(4),
             marks_part_of_words: true,
+            fixed_digits: None,
         }
     }
 }
 
 impl MarkBoundaries {
+    pub fn with_fixed_digits(
+        mut self,
+        policy: crate::pre_tokenizers::fixed_digits::FixedDigits,
+    ) -> Result<Self> {
+        policy.validate()?;
+        self.fixed_digits = Some(policy);
+        Ok(self)
+    }
+
     pub fn new(allcaps_min: Option<usize>, marks_part_of_words: bool) -> Self {
         Self {
             allcaps_min,
             marks_part_of_words,
+            fixed_digits: None,
         }
     }
 
@@ -566,6 +579,7 @@ impl MarkBoundaries {
         Self {
             allcaps_min: Some(4),
             marks_part_of_words: false,
+            fixed_digits: None,
         }
     }
 
@@ -576,6 +590,7 @@ impl MarkBoundaries {
         Self {
             allcaps_min: None,
             marks_part_of_words: false,
+            fixed_digits: None,
         }
     }
 
@@ -628,6 +643,23 @@ impl MarkBoundaries {
 
         for (i, (cls, body)) in runs.iter().enumerate() {
             match cls {
+                _ if self.fixed_digits.is_some() && body.bytes().all(|b| b.is_ascii_digit()) => {
+                    let borders = self.fixed_digits.unwrap().boundary_markers;
+                    out.push(format!(
+                        "{}{}{}",
+                        if borders && borders_space(i, -1) {
+                            BOW_S
+                        } else {
+                            ""
+                        },
+                        body,
+                        if borders && borders_space(i, 1) {
+                            EOW_S
+                        } else {
+                            ""
+                        }
+                    ));
+                }
                 Class::Wordy => {
                     let fused = i > 0 && runs[i - 1].0 == Class::StrayMark;
                     let marked = mark_case(body, self.allcaps_min, fused);
@@ -702,6 +734,24 @@ mod tests {
     // ⟨caps⟩=CAPS_G. Expectations below were captured from ctok's `stream`
     // on inputs without framing effects (no leading space, no trailing
     // newlines); the composed clean+mark pipeline must agree exactly.
+    #[test]
+    fn fixed_ascii_digits_choose_markers_explicitly() {
+        use crate::pre_tokenizers::fixed_digits::FixedDigits;
+        let marked = MarkBoundaries::default()
+            .with_fixed_digits(FixedDigits::single(true))
+            .unwrap();
+        assert!(
+            marked
+                .marked_stream(" 123 ")
+                .contains("\u{FDD0}123\u{FDD1}")
+        );
+        let plain = MarkBoundaries::default()
+            .with_fixed_digits(FixedDigits::triples())
+            .unwrap();
+        assert!(!plain.marked_stream(" 123 ").contains('\u{FDD0}'));
+        assert!(!plain.marked_stream(" 123 ").contains('\u{FDD1}'));
+    }
+
     const B: &str = "\u{FDD0}";
     const E: &str = "\u{FDD1}";
     const S: &str = "\u{FDD3}";

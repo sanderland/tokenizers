@@ -208,6 +208,8 @@ const IDEMPOTENT: &[(&str, &str)] = &[
     // A `Metaspace` with `split: false` leaves the slot empty, so `null` has to round-trip.
     ("pre_tokenizer",  r#"null"#),
     ("pre_tokenizer",  r#"{"type": "Digits", "individual_digits": true}"#),
+    ("pre_tokenizer", r#"{"type":"FixedDigits","group_size":1,"boundary_markers":true}"#),
+    ("pre_tokenizer", r#"{"type":"FixedDigits","group_size":3,"boundary_markers":false}"#),
     ("pre_tokenizer",  r#"{"type": "Whitespace"}"#),
     ("pre_tokenizer",  r#"{"type": "WhitespaceSplit"}"#),
     ("pre_tokenizer",  r#"{"type": "MarkSplit"}"#),

@@ -6,7 +6,7 @@
 //! pass. Pruning drops the least-used pieces by default, with an optional
 //! minimum-increase port of script_tok's `_mi_prune.py`.
 
-use super::seed::{self, SeedInit, Sentence, SentencePiece};
+use super::seed::{self, AlphabetMode, SeedInit, Sentence, SentencePiece};
 use super::unigram::UnigramTrainerError;
 use crate::Trainer;
 use crate::progress::{ProgressBar, ProgressStyle};
@@ -34,6 +34,10 @@ pub enum PruneCriterion {
     MinimumIncrease,
 }
 
+fn default_alphabet_mode() -> AlphabetMode {
+    AlphabetMode::Utf8
+}
+
 fn default_seed_factor() -> f64 {
     1.1
 }
@@ -48,6 +52,10 @@ pub struct MinGramTrainer {
     #[serde(with = "crate::added_token_serde")]
     pub special_tokens: Vec<AddedToken>,
     pub initial_alphabet: AHashSet<char>,
+    #[serde(default = "default_alphabet_mode")]
+    pub alphabet_mode: AlphabetMode,
+    #[serde(default, with = "super::fixed_digits::serde_policy")]
+    pub fixed_digits: Option<tk_encode::pre_tokenizers::fixed_digits::FixedDigits>,
 
     pub max_piece_length: usize,
     seed_size: Option<usize>,
@@ -69,6 +77,8 @@ pub struct MinGramTrainerBuilder {
     n_sub_iterations: Option<u32>,
     special_tokens: Option<Vec<AddedToken>>,
     initial_alphabet: Option<AHashSet<char>>,
+    alphabet_mode: Option<AlphabetMode>,
+    fixed_digits: Option<tk_encode::pre_tokenizers::fixed_digits::FixedDigits>,
     max_piece_length: Option<usize>,
     seed_size: Option<usize>,
     seed_factor: Option<f64>,
@@ -97,6 +107,19 @@ impl MinGramTrainerBuilder {
 
     pub fn special_tokens(&mut self, special_tokens: Vec<AddedToken>) -> &mut Self {
         self.special_tokens = Some(special_tokens);
+        self
+    }
+
+    pub fn fixed_digits(
+        &mut self,
+        policy: Option<tk_encode::pre_tokenizers::fixed_digits::FixedDigits>,
+    ) -> &mut Self {
+        self.fixed_digits = policy;
+        self
+    }
+
+    pub fn alphabet_mode(&mut self, mode: AlphabetMode) -> &mut Self {
+        self.alphabet_mode = Some(mode);
         self
     }
 
@@ -164,6 +187,8 @@ impl MinGramTrainerBuilder {
             n_sub_iterations: self.n_sub_iterations.unwrap_or(2),
             special_tokens: self.special_tokens.clone().unwrap_or_default(),
             initial_alphabet: self.initial_alphabet.clone().unwrap_or_default(),
+            fixed_digits: self.fixed_digits,
+            alphabet_mode: self.alphabet_mode.unwrap_or(AlphabetMode::Utf8),
             max_piece_length: self.max_piece_length.unwrap_or(16),
             seed_size: self.seed_size,
             seed_factor: self.seed_factor.unwrap_or_else(default_seed_factor),
@@ -711,6 +736,33 @@ impl MinGramTrainer {
         sentences: Vec<Sentence>,
         model: &mut Unigram,
     ) -> Result<Vec<AddedToken>> {
+        if let Some(policy) = self.fixed_digits {
+            let prepared = super::fixed_digits::prepare(
+                sentences,
+                &self.initial_alphabet,
+                self.alphabet_mode,
+                policy,
+                self.vocab_size,
+                &self.special_tokens,
+            )?;
+            let mut trainer = self.clone();
+            trainer.fixed_digits = None;
+            trainer.vocab_size = prepared.vocab_size;
+            trainer.initial_alphabet = prepared.alphabet.clone();
+            if prepared.sentences.is_empty() {
+                *model = super::fixed_digits::empty_model(
+                    &prepared,
+                    self.alphabet_mode,
+                    &self.special_tokens,
+                    &None,
+                )?;
+            } else {
+                trainer.do_train(prepared.sentences.clone(), model)?;
+            }
+            model.set_objective(Objective::MinTokens);
+            super::fixed_digits::finish(model, prepared)?;
+            return Ok(self.special_tokens.clone());
+        }
         self.validate()?;
         let mut sentences: Vec<_> = sentences
             .into_iter()
@@ -721,7 +773,8 @@ impl MinGramTrainer {
         }
         // Stable reduction order, including when Trainer::feed collected a hash map.
         sentences.sort_by(|a, b| a.0.cmp(&b.0));
-        let required_chars = seed::required_chars(&sentences, &self.initial_alphabet);
+        let required_chars =
+            seed::required_chars(&sentences, &self.initial_alphabet, self.alphabet_mode);
         if self
             .seed_size
             .is_some_and(|size| size < required_chars.len())
@@ -732,7 +785,11 @@ impl MinGramTrainer {
             )
             .into());
         }
-        let floor = seed::byte_floor_pieces(&required_chars);
+        let floor = if self.alphabet_mode == AlphabetMode::Utf8 {
+            seed::byte_floor_pieces(&required_chars)
+        } else {
+            vec![]
+        };
         for special in &self.special_tokens {
             if required_chars.contains(&special.content) || floor.contains(&special.content) {
                 return Err(
@@ -779,6 +836,7 @@ impl MinGramTrainer {
             seed_size,
             self.max_piece_length,
             &alphabet,
+            self.alphabet_mode,
             &progress,
         )?);
         // Substring seeding only includes observed characters. Both seeds
@@ -856,6 +914,7 @@ impl MinGramTrainer {
             &None,
             &new_model,
             required_chars,
+            self.alphabet_mode,
         )?;
         model.set_objective(Objective::MinTokens);
 

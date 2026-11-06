@@ -7,6 +7,7 @@ mod input;
 mod options;
 mod repr;
 mod tokenizer;
+mod trainers;
 mod type_hints;
 
 #[pyo3::pymodule]
@@ -24,5 +25,6 @@ mod tokenizers {
     #[pymodule_export]
     use crate::tokenizer::Tokenizer;
 
-    // TODO: bind trainers
+    #[pymodule_export]
+    use crate::trainers::train;
 }

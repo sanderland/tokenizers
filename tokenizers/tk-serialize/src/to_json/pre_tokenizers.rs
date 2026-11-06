@@ -53,6 +53,14 @@ fn write_one(out: &mut Out, pretok: &PipelinePreTokenizer) -> Result<()> {
         PipelinePreTokenizer::Bert(_) => bare(out, "BertPreTokenizer"),
         #[cfg(feature = "unicode-scripts")]
         PipelinePreTokenizer::UnicodeScripts(_) => bare(out, "UnicodeScripts"),
+        PipelinePreTokenizer::FixedDigits(digits) => {
+            digits.validate()?;
+            out.obj_open();
+            out.type_tag("FixedDigits");
+            out.field_usize("group_size", digits.group_size);
+            out.field_bool("boundary_markers", digits.boundary_markers);
+            out.obj_close();
+        }
         PipelinePreTokenizer::Digits(digits) => {
             out.obj_open();
             out.type_tag("Digits");

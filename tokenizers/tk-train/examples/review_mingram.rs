@@ -5,7 +5,7 @@ use tk_encode::decoders::{Decoder, unmark::Unmark};
 use tk_encode::models::unigram::{Objective, Unigram};
 use tk_encode::normalizers::{ClaudeNormalizer, MarkBoundaries};
 use tk_encode::pre_tokenizers::mark_split::MarkSplit;
-use tk_train::trainers::{MinGramTrainer, PruneCriterion, SeedInit};
+use tk_train::trainers::{AlphabetMode, MinGramTrainer, PruneCriterion, SeedInit};
 
 fn probe(v: &Value) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
     match v["op"].as_str().unwrap_or("mark") {
@@ -43,6 +43,12 @@ fn probe(v: &Value) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
         "train" | "em" | "trim" => {
             let mut builder = MinGramTrainer::builder();
             builder.show_progress(false);
+            if v["alphabet_mode"] == "byte_level" {
+                builder.alphabet_mode(AlphabetMode::ByteLevel);
+            }
+            if v["alphabet_mode"] == "legacy" {
+                builder.alphabet_mode(AlphabetMode::Legacy);
+            }
             if let Some(n) = v["vocab_size"].as_u64() {
                 builder.vocab_size(n as u32);
             }

@@ -89,6 +89,11 @@ fn write_one(out: &mut Out, normalizer: &PipelineNormalizer) -> Result<()> {
                 None => out.field_null("allcaps_min"),
             }
             out.field_bool("marks_part_of_words", mark.marks_part_of_words);
+            if let Some(policy) = mark.fixed_digits {
+                policy.validate()?;
+                out.field_usize("digit_group_size", policy.group_size);
+                out.field_bool("digit_boundary_markers", policy.boundary_markers);
+            }
             out.obj_close();
         }
         #[cfg(feature = "normalizers")]

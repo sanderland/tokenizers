@@ -31,6 +31,19 @@ pub(crate) type Sentence = (String, u32);
 /// Seed vocabulary cap when the trainer's `seed_size` is unset (upstream default).
 pub(crate) const DEFAULT_SEED_SIZE: usize = 1_000_000;
 
+/// Required alphabet and fallback inventory for Unigram-family models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlphabetMode {
+    /// Observed and explicitly required characters, as in legacy Unigram.
+    #[default]
+    Legacy,
+    /// Observed characters plus the UTF-8 fallback inventory.
+    Utf8,
+    /// The 256-symbol reversible GPT-2 byte alphabet.
+    ByteLevel,
+}
+
 /// How a Unigram-family trainer builds its seed vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +83,7 @@ pub(crate) fn make_seed_pieces(
     seed_size: usize,
     max_piece_length: usize,
     initial_alphabet: &AHashSet<char>,
+    mode: AlphabetMode,
     progress: &Option<ProgressBar>,
 ) -> Result<Vec<SentencePiece>> {
     match seed_init {
@@ -77,11 +91,16 @@ pub(crate) fn make_seed_pieces(
             sentences,
             seed_size,
             max_piece_length,
+            mode,
             progress,
         )),
-        SeedInit::Bpe => {
-            make_bpe_seed_pieces(sentences, seed_size, max_piece_length, initial_alphabet)
-        }
+        SeedInit::Bpe => make_bpe_seed_pieces(
+            sentences,
+            seed_size,
+            max_piece_length,
+            initial_alphabet,
+            mode,
+        ),
     }
 }
 
@@ -89,6 +108,7 @@ fn make_substring_seed_pieces(
     sentences: &[Sentence],
     seed_size: usize,
     max_piece_length: usize,
+    mode: AlphabetMode,
     _progress: &Option<ProgressBar>,
 ) -> Vec<SentencePiece> {
     // Put all sentences in a string, separated by \0
@@ -140,6 +160,13 @@ fn make_substring_seed_pieces(
             if !is_valid_sentencepiece(string, max_piece_length) {
                 return None;
             }
+            if mode == AlphabetMode::ByteLevel
+                && !tk_encode::utils::byte_level::is_utf8_complete_or_prefix(
+                    &string.iter().collect::<String>(),
+                )
+            {
+                return None;
+            }
             let score = freq * string.len() as u32;
             // if let Some(p) = &progress {
             //     p.inc(1);
@@ -174,6 +201,7 @@ fn make_bpe_seed_pieces(
     seed_size: usize,
     max_piece_length: usize,
     initial_alphabet: &AHashSet<char>,
+    mode: AlphabetMode,
 ) -> Result<Vec<SentencePiece>> {
     // Deterministic input order: BPE counts are order-independent integers,
     // but the re-segmentation counts below sum floats per piece.
@@ -191,6 +219,7 @@ fn make_bpe_seed_pieces(
         .show_progress(false)
         .max_token_length(Some(max_piece_length * 4))
         .initial_alphabet(initial_alphabet.iter().copied().collect())
+        .enforce_utf8_boundaries(mode == AlphabetMode::ByteLevel)
         .build();
     let (vocab, merges, _special) = bpe_trainer.do_train(&word_counts)?;
     // Every BPE token seeds, in vocab order. Tokens the re-segmentation never
@@ -239,6 +268,7 @@ fn make_bpe_seed_pieces(
     _seed_size: usize,
     _max_piece_length: usize,
     _initial_alphabet: &AHashSet<char>,
+    _mode: AlphabetMode,
 ) -> Result<Vec<SentencePiece>> {
     Err("seed_init=\"bpe\" needs tk-train's `bpe` feature".into())
 }
@@ -267,12 +297,18 @@ const HARDCODED_ALPHABET: [char; 133] = {
 pub(crate) fn required_chars(
     word_counts: &[Sentence],
     initial_alphabet: &AHashSet<char>,
+    mode: AlphabetMode,
 ) -> AHashSet<String> {
+    let extra: Vec<char> = match mode {
+        AlphabetMode::Legacy => vec![],
+        AlphabetMode::Utf8 => HARDCODED_ALPHABET.to_vec(),
+        AlphabetMode::ByteLevel => tk_encode::utils::byte_level::BYTES_CHAR_LOOKUP.to_vec(),
+    };
     word_counts
         .iter()
         .flat_map(|(s, _count)| s.chars())
         .chain(initial_alphabet.iter().copied())
-        .chain(HARDCODED_ALPHABET)
+        .chain(extra)
         .map(|c| c.to_string())
         .collect()
 }
@@ -323,11 +359,16 @@ pub(crate) fn finalize(
     unk_token: &Option<String>,
     model: &Unigram,
     required_chars: AHashSet<String>,
+    mode: AlphabetMode,
 ) -> Result<Unigram> {
     let mut min_score_penalty = 0.0;
     let min_score_penalty_delta = 0.0001;
 
-    let floor = byte_floor_pieces(&required_chars);
+    let floor = if mode == AlphabetMode::Utf8 {
+        byte_floor_pieces(&required_chars)
+    } else {
+        vec![]
+    };
 
     let mut pieces: Vec<(String, f64)> = vec![];
     let mut inserted: AHashSet<String> = AHashSet::new();
@@ -409,7 +450,7 @@ pub(crate) fn finalize(
     Unigram::from(
         special_tokens.into_iter().chain(pieces).collect(),
         unk_id,
-        true,
+        mode == AlphabetMode::Utf8,
     )
 }
 
@@ -419,13 +460,29 @@ mod tests {
     use assert_approx_eq::assert_approx_eq;
 
     #[test]
+    fn alphabet_modes_control_required_pieces_and_fallback() {
+        let sentences = vec![("abc".to_owned(), 1)];
+        let initial = AHashSet::new();
+        let legacy = required_chars(&sentences, &initial, AlphabetMode::Legacy);
+        let bytes = required_chars(&sentences, &initial, AlphabetMode::ByteLevel);
+        assert_eq!(legacy.len(), 3);
+        assert_eq!(bytes.len(), 256);
+        let model = Unigram::from(vec![("a".into(), 0.0)], None, false).unwrap();
+        let result = finalize(256, &[], &None, &model, bytes, AlphabetMode::ByteLevel).unwrap();
+        assert_eq!(result.len(), 256);
+        assert!(!result.byte_fallback());
+        assert!(result.token_to_id("<0x80>").is_none());
+    }
+
+    #[test]
     fn test_substring_seed_chars() {
         let sentences = vec![
             ("This is a".to_string(), 1),
             ("こんにちは友達".to_string(), 1),
         ];
 
-        let table = make_substring_seed_pieces(&sentences, 1_000_000, 16, &None);
+        let table =
+            make_substring_seed_pieces(&sentences, 1_000_000, 16, AlphabetMode::Legacy, &None);
 
         let target_strings = vec![
             "s", "i", " ", "達", "友", "ん", "は", "に", "ち", "こ", "h", "a", "T", "is ", "s ",
@@ -468,7 +525,8 @@ mod tests {
         ];
         let alphabet = AHashSet::new();
 
-        let seed = make_bpe_seed_pieces(&sentences, 10, 16, &alphabet).unwrap();
+        let seed =
+            make_bpe_seed_pieces(&sentences, 10, 16, &alphabet, AlphabetMode::Legacy).unwrap();
 
         // Single chars are always in the seed, longer BPE tokens join them,
         // everything within max_piece_length, scores are log-probs.
@@ -491,7 +549,8 @@ mod tests {
         let sentences = vec![("abcdefgh".to_string(), 20)];
         let alphabet = AHashSet::new();
 
-        let seed = make_bpe_seed_pieces(&sentences, 20, 3, &alphabet).unwrap();
+        let seed =
+            make_bpe_seed_pieces(&sentences, 20, 3, &alphabet, AlphabetMode::Legacy).unwrap();
 
         assert!(!seed.is_empty());
         assert!(seed.iter().all(|(s, _)| s.chars().count() <= 3));
@@ -508,8 +567,10 @@ mod tests {
         ];
         let alphabet = AHashSet::new();
 
-        let first = make_bpe_seed_pieces(&sentences, 30, 16, &alphabet).unwrap();
-        let second = make_bpe_seed_pieces(&sentences, 30, 16, &alphabet).unwrap();
+        let first =
+            make_bpe_seed_pieces(&sentences, 30, 16, &alphabet, AlphabetMode::Legacy).unwrap();
+        let second =
+            make_bpe_seed_pieces(&sentences, 30, 16, &alphabet, AlphabetMode::Legacy).unwrap();
         assert_eq!(first, second);
     }
 
@@ -521,7 +582,7 @@ mod tests {
             AddedToken::from("<s>", true),
             AddedToken::from("</s>", true),
         ];
-        let err = finalize(1, &specials, &None, &model, chars).unwrap_err();
+        let err = finalize(1, &specials, &None, &model, chars, AlphabetMode::Utf8).unwrap_err();
         assert!(
             err.to_string().contains("vocabulary"),
             "expected VocabularyTooSmall, got: {err}"
@@ -534,7 +595,7 @@ mod tests {
         let chars: AHashSet<String> = ["a".to_string()].into_iter().collect();
         // 1 required + 115 multibyte singles (ASCII needs no byte
         // spellings), no prefixes from a one-byte char.
-        let out = finalize(116, &[], &None, &model, chars).unwrap();
+        let out = finalize(116, &[], &None, &model, chars, AlphabetMode::Utf8).unwrap();
         assert!(out.byte_fallback());
         let spellings: Vec<&str> = out.iter().map(|(t, _)| t.as_str()).collect();
         assert_eq!(spellings.len(), 116);
@@ -548,7 +609,7 @@ mod tests {
         }
         // One slot short of required + floor: fail, don't overshoot.
         let chars: AHashSet<String> = ["a".to_string()].into_iter().collect();
-        assert!(finalize(115, &[], &None, &model, chars).is_err());
+        assert!(finalize(115, &[], &None, &model, chars, AlphabetMode::Utf8).is_err());
     }
 
     #[test]
@@ -556,7 +617,7 @@ mod tests {
         let model =
             Unigram::from(vec![("a".into(), -2.0), ("aa".into(), -1.0)], None, false).unwrap();
         let chars = AHashSet::from(["a".to_owned()]);
-        let out = finalize(116, &[], &None, &model, chars).unwrap();
+        let out = finalize(116, &[], &None, &model, chars, AlphabetMode::Utf8).unwrap();
         assert_eq!(out.len(), 116);
         assert!(out.token_to_id("aa").is_none());
     }
@@ -566,7 +627,7 @@ mod tests {
         use std::iter::FromIterator;
         let sentences = vec![("こんにちは友達".to_string(), 1)];
         let alphabet = AHashSet::from_iter(vec!['a', 'b', 'c', 'd', 'e', 'f']);
-        let required = required_chars(&sentences, &alphabet);
+        let required = required_chars(&sentences, &alphabet, AlphabetMode::Utf8);
         // Observed non-ASCII plus the initial alphabet survive…
         for c in [
             "こ", "ん", "に", "ち", "は", "友", "達", "a", "b", "c", "d", "e", "f",

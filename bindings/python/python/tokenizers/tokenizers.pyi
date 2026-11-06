@@ -141,6 +141,10 @@ class Tokenizer:
     """
     A tokenizer. Encodes text into token ids, and decodes token ids back into text.
     """
+    def __new__(cls, /) -> Tokenizer:
+        """
+        Create an empty tokenizer for training.
+        """
     def __reduce__(self, /) -> tuple[Any, tuple[str, Padding | None, Truncation | None]]:
         """
         Pickle rebuilds a `Tokenizer` by calling `_unpickle` with these arguments.
@@ -321,6 +325,10 @@ class Tokenizer:
         """
     @padding.setter
     def padding(self, /, padding: Padding | None) -> None: ...
+    def save(self, /, path: str | PathLike[str]) -> None:
+        """
+        Save this tokenizer as JSON.
+        """
     def tokenize(
         self,
         /,
@@ -355,6 +363,14 @@ class Tokenizer:
 
         Returns:
             list[str]
+        """
+    def train(self, /, files: Any, trainer: Any) -> None:
+        """
+        Train this tokenizer in place from UTF-8 files.
+        """
+    def train_from_iterator(self, /, iterator: Any, trainer: Any, length: int | None = None) -> None:
+        """
+        Train this tokenizer in place on an iterable of strings.
         """
     @property
     def truncation(self, /) -> Truncation | None:
@@ -413,3 +429,26 @@ class Truncation:
         """
         Which sequence of a pair is truncated.
         """
+
+def train(
+    kind: str,
+    sequences: Sequence[str],
+    vocab_size: int,
+    show_progress: bool,
+    special_tokens: Sequence[str],
+    seed_init: str,
+    seed_size: int | None,
+    max_piece_length: int,
+    n_sub_iterations: int,
+    shrinking_factor: float,
+    seed_factor: float,
+    prune_criterion: str,
+    pruning_shrinking_factor: float,
+    skip_substring_in_batch: bool,
+    unk_token: str | None,
+    min_frequency: int,
+    initial_alphabet: Sequence[str],
+    alphabet_mode: str,
+    fixed_digits: str | None,
+    template: Tokenizer | None,
+) -> Tokenizer: ...

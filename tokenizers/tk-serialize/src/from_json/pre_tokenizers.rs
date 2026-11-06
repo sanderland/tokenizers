@@ -67,6 +67,14 @@ fn read_one_pre_tokenizer(cfg: &Json<'_>) -> Result<PipelinePreTokenizer> {
                 "unicode-scripts",
             ));
         }
+        "FixedDigits" => {
+            let policy = tk_encode::pre_tokenizers::fixed_digits::FixedDigits {
+                group_size: cfg.need("FixedDigits", "group_size", Json::as_usize)?,
+                boundary_markers: b("boundary_markers", false),
+            };
+            policy.validate()?;
+            PipelinePreTokenizer::FixedDigits(policy)
+        }
         "Digits" => PipelinePreTokenizer::Digits(Digits::new(b("individual_digits", false))),
         "Punctuation" => PipelinePreTokenizer::Punctuation(Punctuation::new(read_behavior(
             cfg,

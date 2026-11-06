@@ -1,0 +1,63 @@
+{
+  "source_sha256": "7502a15923c4c9dddad31ecf844bdd1ccdeaf53cccea2a09c71771a8b5faba38",
+  "holdout_sha256": "6d64fc9ee52243ca0e438d5841b82f15f3bfc65df4d51019f8615459fecb7e65",
+  "bpe_test_tokens": 79722,
+  "original_rust_test_tokens": 79542,
+  "required_characters": 320,
+  "prefixes": 44,
+  "results": [
+    {
+      "variant": "reference",
+      "actual_size": 4096,
+      "test_tokens": 79045,
+      "gain_vs_bpe_pct": 0.8492009733825023
+    },
+    {
+      "variant": "charge_223_extra_slots",
+      "actual_size": 3873,
+      "test_tokens": 79618,
+      "gain_vs_bpe_pct": 0.13045332530543519
+    },
+    {
+      "variant": "max_16_characters",
+      "actual_size": 4096,
+      "test_tokens": 79283,
+      "gain_vs_bpe_pct": 0.5506635558566009
+    },
+    {
+      "variant": "rust_count_floor",
+      "actual_size": 4096,
+      "test_tokens": 79045,
+      "gain_vs_bpe_pct": 0.8492009733825023
+    },
+    {
+      "variant": "protect_characters_and_prefixes",
+      "actual_size": 4096,
+      "test_tokens": 79487,
+      "gain_vs_bpe_pct": 0.2947743408344028
+    },
+    {
+      "variant": "protected_plus_floor",
+      "actual_size": 4096,
+      "test_tokens": 79419,
+      "gain_vs_bpe_pct": 0.38007074584179845
+    },
+    {
+      "variant": "protected_plus_max16",
+      "actual_size": 4096,
+      "test_tokens": 79713,
+      "gain_vs_bpe_pct": 0.011289230074507106
+    },
+    {
+      "variant": "protected_floor_max16",
+      "actual_size": 4096,
+      "test_tokens": 79645,
+      "gain_vs_bpe_pct": 0.09658563508191387
+    }
+  ],
+  "caveats": [
+    "Reference-only ablations; protective inventory retains all 256 atomic bytes (13 more than the Rust UTF-8 floor).",
+    "The 223-slot charge measures capacity sensitivity, not exact equivalence of vocabularies.",
+    "This fixture is not the paper corpus."
+  ]
+}

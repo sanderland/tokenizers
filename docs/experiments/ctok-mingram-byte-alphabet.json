@@ -1,0 +1,38 @@
+{
+  "source_sha256": "7502a15923c4c9dddad31ecf844bdd1ccdeaf53cccea2a09c71771a8b5faba38",
+  "holdout_sha256": "6d64fc9ee52243ca0e438d5841b82f15f3bfc65df4d51019f8615459fecb7e65",
+  "reference_bpe_test_tokens": 79722,
+  "reference_mingram_test_tokens": 79045,
+  "old_rust_utf8_test_tokens": 79542,
+  "seed_factor": 1.1,
+  "vocab_size": 4096,
+  "results": [
+    {
+      "max_piece_length_bytes": 16,
+      "actual_size": 4096,
+      "test_tokens": 79250,
+      "gain_vs_reference_bpe_pct": 0.5920573994631306,
+      "invalid_multibyte_pieces": 0
+    },
+    {
+      "max_piece_length_bytes": 64,
+      "actual_size": 4096,
+      "test_tokens": 79066,
+      "gain_vs_reference_bpe_pct": 0.8228594365419784,
+      "invalid_multibyte_pieces": 0
+    },
+    {
+      "max_piece_length_bytes": 256,
+      "actual_size": 4096,
+      "test_tokens": 79048,
+      "gain_vs_reference_bpe_pct": 0.8454378966910037,
+      "invalid_multibyte_pieces": 0
+    }
+  ],
+  "caveats": [
+    "Same NFC and GPT4O regex chunks; Rust sees a reversible mapping of their UTF-8 bytes.",
+    "Rust BPE and script_tok BPE can choose different merges on equal frequencies.",
+    "Length counts byte atoms in this alphabet, not Unicode codepoints.",
+    "This fixture is not the paper corpus."
+  ]
+}

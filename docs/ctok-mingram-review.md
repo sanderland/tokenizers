@@ -4,11 +4,88 @@ Reviewed on 2026-11-06. Branch `ctok-mingram`, based on
 `hackathon/mingram-trainer` at `2bfa100c`. Reference checkouts are
 `sanderland/ctok` at `8c43ffd` and `sanderland/script_tok` at `7e7dc03`.
 
-The core MinGram encoder works, and the larger UTF-8 compression check shows
-a small held-out gain over BPE. The first pass fixed vocabulary accounting,
-unsafe configuration values, stale Unicode categories, and fallback pricing.
-There are still differences from the research implementation and practical
-API gaps to resolve before presenting this as a finished user-facing trainer.
+The second pass adds Python training, selectable alphabets for both Unigram
+trainers, and fixed ASCII digit inventories. The controlled Rosetta comparison
+now gets **0.845%** compression gain with Rust byte-alphabet MinGram versus
+**0.849%** with `script_tok`; the earlier UTF-8 character-inventory path got
+0.226%. These are local fixture results, not the paper's full evaluation.
+
+## Compression gap investigation
+
+Same 1,741 training documents, separate 250-document holdout, NFC + GPT4O regex,
+4,096 total vocabulary entries, and seed factor 1.1. Lower token counts win.
+
+| Model / controlled change | Holdout tokens | Gain over reference BPE |
+| --- | ---: | ---: |
+| Reference BPE | 79,722 | — |
+| Reference MinGram | 79,045 | 0.849% |
+| Earlier Rust UTF-8 character path | 79,542 | 0.226% |
+| Rust byte alphabet, 16-byte piece limit | 79,250 | 0.592% |
+| Rust byte alphabet, 64-byte piece limit | 79,066 | 0.823% |
+| Rust byte alphabet, 256-byte piece limit | 79,048 | 0.845% |
+
+The old Rust path reserved 320 full characters plus 159 byte/prefix pieces,
+while the reference required 256 byte atoms. It spent 223 more slots on its
+forced inventory. In a reference-only ablation, protecting the same full
+characters and prefixes changed 79,045 to 79,487 tokens (0.295% gain), close
+to the old Rust result. This ablation retains the reference's 13 otherwise
+unused byte atoms too, so it is a diagnostic, not an identical vocabulary.
+Charging the reference 223 vocabulary slots separately produced 79,618 tokens.
+
+A separate reference ablation limiting seed pieces to 16 decoded characters
+produced 79,283 tokens (0.551% gain). Flooring unused required counts at 0.5
+instead of zero changed no held-out token counts in isolation. The effects
+interact: they must not be added as independent contributions. The nearly
+matching byte-alphabet result confirms that inventory policy and length
+restrictions, rather than a missing UTF-8 encoding capability, account for
+most of the gap. The remaining three-token difference has not been isolated;
+seed frequency ties and scoring ties can still differ.
+
+Raw results and executable comparisons:
+[reference ablations](experiments/ctok-mingram-gap.json),
+[byte-alphabet comparison](experiments/ctok-mingram-byte-alphabet.json),
+[investigation script](../scripts/investigate_mingram_gap.py), and
+[byte comparison script](../scripts/compare_mingram_byte_alphabet.py).
+
+## Alphabets and Python training
+
+Both `UnigramTrainer` and `MinGramTrainer` accept the same `alphabet_mode`:
+
+- `legacy`: observed / explicitly supplied characters, without forcing the
+  ASCII/marker inventory or byte fallbacks. Default for plain Unigram.
+- `utf8`: the earlier character inventory plus byte/prefix fallback pieces.
+  Default for MinGram and used by the Claude example.
+- `byte_level`: all 256 reversible GPT-2 byte symbols, with no separate
+  `<0x…>` floor or requirement to preserve full observed characters.
+
+Byte-alphabet BPE seeds only merge complete UTF-8 or a leading prefix of one
+character. Thus partial characters merge left to right before joining adjacent
+characters. Substring seeds apply the same piece constraint, even when the
+BPE feature is disabled. Single byte atoms remain available for all inputs.
+There is no mandatory SentencePiece-style character coverage in byte mode.
+The piece-length bound counts alphabet symbols: bytes in byte mode and
+Unicode characters in the other modes. Set it explicitly for research comparisons.
+
+```python
+from tokenizers import Tokenizer, trainers
+
+tokenizer = Tokenizer()
+tokenizer.train_from_iterator(
+    ["some multilingual training text", "more text"],
+    trainer=trainers.UnigramTrainer(
+        vocab_size=8000, alphabet_mode="byte_level", show_progress=False,
+    ),
+)
+tokenizer.save("tokenizer.json")
+```
+
+`MinGramTrainer` and `BpeTrainer` expose the same iterator/file entry points.
+New Python byte-alphabet tokenizers install the matching normalizer and decoder.
+Retraining an existing tokenizer preserves preprocessing and rebinds template
+and padding token IDs by spelling; failure leaves the original tokenizer intact.
+The current iterator implementation collects text in memory. These bindings
+restore the training workflow but do not recreate every historical Python model
+constructor or trainer class. See [Python usage](../bindings/python/README.md).
 
 ## What the Claude-inspired path does
 
@@ -40,9 +117,39 @@ tiler. The presets reproduce boundary rewrites, with chat framing removed;
 they do not import Claude's measured vocabulary or reproduce message counts.
 Offsets refer to the rewritten stream rather than original input bytes.
 
-### Digits
+### Fixed digits
 
-There is no one-digit, left-to-right-three-digit, or right-to-left-three-digit
+The new explicit `FixedDigits` policy supports ASCII decimal digits:
+
+| Policy | Fixed entries | Example `1234567` |
+| --- | ---: | --- |
+| Single | 10 | `1 | 2 | 3 | 4 | 5 | 6 | 7` |
+| Single with boundary forms | 40 | Same cuts; first/last digits can carry BOW/EOW |
+| Right-to-left triples | 1,110 | `1 | 234 | 567` |
+
+The triple inventory includes one-, two-, and three-digit strings, including
+leading zeros. It permits no digit-boundary forms. All numeric entries are
+reserved inside the vocabulary cap, assigned score zero, and excluded from
+seeding and EM. No learned numeric composites are created, including on an
+all-numeric corpus. Existing special tokens cannot collide with this inventory.
+
+Python: pass `fixed_digits="single"`, `"single_marked"`, or `"triples"`
+to a new Unigram/MinGram tokenizer's trainer. BPE fixed digits are explicitly
+unsupported. Existing Python pipelines reject fixed-digit retraining because
+an earlier regex splitter might already have broken numeric runs in the wrong
+direction; marked digits with byte-level normalization also fail explicitly.
+These restrictions avoid silently producing a different numeric policy.
+
+For the Rust Claude path, use the same policy in `MarkBoundaries::with_fixed_digits`,
+`PipelinePreTokenizer::FixedDigits` after `MarkSplit`, and trainer `.fixed_digits`.
+The example demonstrates all three inventories and save/load. Marker forms
+are only inserted when requested; the generic fixed-digit splitter consumes
+existing markers and does not rewrite text. Non-ASCII numerals keep their
+existing treatment. Legacy learned-digit behavior remains available with no policy.
+
+### Legacy Claude digits
+
+Without an explicit fixed policy, there is no one-digit or three-digit grouping
 rule. Examples below show v4.7 frameless spans; `B` and `E` stand for the
 beginning/end markers.
 
@@ -184,19 +291,6 @@ objects can yield different held-out paths. The JSON records both counts.
 
 ## Remaining work worth doing
 
-- **Keep plain Unigram compatibility separate.** The inherited branch uses
-  shared seeding/finalization helpers to force MinGram's ASCII/marker alphabet
-  and byte floor into `UnigramTrainer` as well. That changes its small-vocab
-  behavior and fallback policy. Isolate that policy before an upstream PR.
-- **Close the UTF-8 training gap.** The reference learns partial prefixes and
-  characters through constrained byte merges. The Rust version protects every
-  observed character and installs every observed prefix afterward. The
-  Rosetta gap warrants a controlled seed/vocab comparison; larger CJK corpora
-  also need a principled rare-character coverage policy within the cap.
-- **Expose a practical training entry point.** The Python binding explicitly
-  leaves trainers unbound. Rust works, but the example has a hardcoded tiny
-  corpus. A file/iterator training interface with matching preprocessing is
-  needed for the intended "train your own" workflow.
 - **Treat presets and formats carefully.** Pin Unicode data for historical
   Claude presets, distinguish rewritten offsets from source offsets, and
   document that custom normalizers/models are fork-specific JSON components.
@@ -209,6 +303,16 @@ actual alphabets and sizes recorded. The local fixture experiments above
 do not reproduce the paper's full training scale, morphology evaluation,
 or downstream language-model results.
 
+## Verification after the second pass
+
+359 Rust unit tests pass across encoder, serializer and trainers; two fixture-based
+tests are ignored. Eleven Python trainer tests pass, covering both Unigram
+alphabets, fixed inventories, serialization, existing preprocessing, byte-level
+BPE, and atomic failure when retraining would invalidate a postprocessor.
+The Claude example round-trips all digit policies through save/load. A minimal
+Unigram-only build also passes without BPE enabled. The broader Python suite
+requires tokenizer fixture files absent from this checkout and was not run.
+
 ## Reproduce this review
 
 From the repository root, build the probe:
@@ -218,6 +322,8 @@ cd tokenizers
 cargo build -p tk-train --example review_mingram --features normalizers
 cd ..
 python scripts/review_mingram.py --output docs/experiments/ctok-mingram-parity.json
+python scripts/investigate_mingram_gap.py
+python scripts/compare_mingram_byte_alphabet.py
 python scripts/compare_mingram_compression.py --output /tmp/udhr-compression.json
 python scripts/compare_mingram_compression.py --corpus rosetta --vocab-size 4096 \
   --factors 1.1 1.15 2.0 --output /tmp/rosetta-compression.json

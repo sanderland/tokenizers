@@ -4,6 +4,8 @@
 #[cfg(feature = "bpe")]
 pub mod bpe;
 #[cfg(feature = "unigram")]
+mod fixed_digits;
+#[cfg(feature = "unigram")]
 pub mod mingram;
 #[cfg(feature = "unigram")]
 pub mod seed;
@@ -19,7 +21,7 @@ pub use bpe::*;
 #[cfg(feature = "unigram")]
 pub use mingram::*;
 #[cfg(feature = "unigram")]
-pub use seed::SeedInit;
+pub use seed::{AlphabetMode, SeedInit};
 #[cfg(feature = "unigram")]
 pub use unigram::*;
 #[cfg(feature = "wordlevel")]

@@ -30,7 +30,9 @@ use tk_encode::pipeline::{
     EncodeOptions, PipelineModel, PipelineNormalizer, PipelinePostProcessor, PipelinePreTokenizer,
     PipelineToken, PipelineTokenizer,
 };
-use tk_encode::pre_tokenizers::mark_split::MarkSplit;
+use tk_encode::pre_tokenizers::{
+    fixed_digits::FixedDigits, mark_split::MarkSplit, sequence::PipelineSequence,
+};
 use tk_encode::vocab::bucket_added_vocabulary::AddedVocabulary;
 use tk_train::trainers::MinGramTrainer;
 
@@ -83,7 +85,12 @@ fn marked_sentences(marking: &MarkBoundaries) -> Vec<(String, u32)> {
 fn train(marking: &MarkBoundaries) -> Result<Unigram, Box<dyn Error + Send + Sync>> {
     let trainer = MinGramTrainer::builder()
         .show_progress(false)
-        .vocab_size(400)
+        .vocab_size(if marking.fixed_digits.is_some_and(|d| d.group_size == 3) {
+            1600
+        } else {
+            400
+        })
+        .fixed_digits(marking.fixed_digits)
         .build()
         .unwrap();
     let mut model = Unigram::default();
@@ -96,9 +103,15 @@ fn pipeline_for(model: Unigram, marking: MarkBoundaries) -> PipelineTokenizer {
         AddedVocabulary::new(),
         vec![
             PipelineNormalizer::ClaudeNormalizer(ClaudeNormalizer::new(false)),
-            PipelineNormalizer::MarkBoundaries(marking),
+            PipelineNormalizer::MarkBoundaries(marking.clone()),
         ],
-        PipelinePreTokenizer::MarkSplit(MarkSplit),
+        match marking.fixed_digits {
+            Some(policy) => PipelinePreTokenizer::Sequence(PipelineSequence::new(vec![
+                PipelinePreTokenizer::MarkSplit(MarkSplit),
+                PipelinePreTokenizer::FixedDigits(policy),
+            ])),
+            None => PipelinePreTokenizer::MarkSplit(MarkSplit),
+        },
         PipelineModel::Unigram(model),
         PipelinePostProcessor::default(),
         Some(DecoderRuntime::Unmark(Unmark::new())),
@@ -177,5 +190,26 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         "expected the fix to win on at least one demo"
     );
     println!("the fix wins on {strictly_fewer} of {} demos", demos.len());
+    // Fixed numeric inventories work even when no numbers occurred in training.
+    for policy in [
+        FixedDigits::single(false),
+        FixedDigits::single(true),
+        FixedDigits::triples(),
+    ] {
+        let marking = MarkBoundaries::default().with_fixed_digits(policy)?;
+        let numeric = pipeline_for(train(&marking)?, marking);
+        let numeric = tk_serialize::from_json(&tk_serialize::to_json(&numeric)?)?;
+        let input = "1234567";
+        let encoded = numeric.encode(vec![input], &options).wait()?;
+        assert_eq!(encoded[0].len(), if policy.group_size == 1 { 7 } else { 3 });
+        assert_eq!(
+            numeric.decode(PipelineToken::cast_slice(encoded[0].ids()), false)?,
+            input
+        );
+        println!(
+            "fixed digits {policy:?}: {:?}",
+            numeric.decode_tokens(PipelineToken::cast_slice(encoded[0].ids()), false)
+        );
+    }
     Ok(())
 }

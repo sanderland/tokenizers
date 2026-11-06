@@ -25,6 +25,7 @@ numpy = "=0.29"
 tk = { package = "tokenizers", path = "../../tokenizers", default-features = false, features = [
   # `to_json`, for `__repr__` and pickling.
   "serialize",
+  "train",
   "parallelism",
   "normalizers",
   "bpe",

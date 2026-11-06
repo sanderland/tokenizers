@@ -94,10 +94,22 @@ fn push_normalizer(cfg: &Json<'_>, out: &mut Vec<PipelineNormalizer>) -> Result<
                     "MarkBoundaries `allcaps_min` is not a non-negative integer or null".into()
                 })?)
             };
-            out.push(PipelineNormalizer::MarkBoundaries(MarkBoundaries::new(
+            let mut marking = MarkBoundaries::new(
                 allcaps_min,
                 cfg.need(&owner, "marks_part_of_words", Json::as_bool)?,
-            )));
+            );
+            if let Some(width) = cfg.field("digit_group_size") {
+                marking = marking.with_fixed_digits(
+                    tk_encode::pre_tokenizers::fixed_digits::FixedDigits {
+                        group_size: width.as_usize().ok_or("invalid digit_group_size")?,
+                        boundary_markers: cfg
+                            .field("digit_boundary_markers")
+                            .and_then(Json::as_bool)
+                            .unwrap_or(false),
+                    },
+                )?;
+            }
+            out.push(PipelineNormalizer::MarkBoundaries(marking));
         }
         #[cfg(feature = "normalizers")]
         "BertNormalizer" => {

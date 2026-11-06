@@ -2,6 +2,7 @@ pub mod bert;
 pub mod byte_level;
 pub mod delimiter;
 pub mod digits;
+pub mod fixed_digits;
 pub mod fixed_length;
 pub mod mark_split;
 pub mod punctuation;

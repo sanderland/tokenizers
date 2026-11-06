@@ -52,7 +52,15 @@ impl Ord for Merge {
     }
 }
 
+/// A byte-level merge must yield complete UTF-8, or a leading prefix of
+/// exactly one character. Continuations therefore merge from left to right,
+/// before that character can merge with its neighbours.
+pub(crate) fn safe_utf8_piece(piece: &str) -> bool {
+    tk_encode::utils::byte_level::is_utf8_complete_or_prefix(piece)
+}
+
 struct Config {
+    enforce_utf8_boundaries: bool,
     min_frequency: u64,
     vocab_size: usize,
     show_progress: bool,
@@ -75,6 +83,7 @@ impl Default for BpeTrainerBuilder {
     fn default() -> Self {
         Self {
             config: Config {
+                enforce_utf8_boundaries: false,
                 min_frequency: 0,
                 vocab_size: 30000,
                 show_progress: true,
@@ -173,8 +182,14 @@ impl BpeTrainerBuilder {
     }
 
     /// Constructs the final BpeTrainer
+    pub(crate) fn enforce_utf8_boundaries(mut self, enabled: bool) -> Self {
+        self.config.enforce_utf8_boundaries = enabled;
+        self
+    }
+
     pub fn build(self) -> BpeTrainer {
         BpeTrainer {
+            enforce_utf8_boundaries: self.config.enforce_utf8_boundaries,
             min_frequency: self.config.min_frequency,
             vocab_size: self.config.vocab_size,
             show_progress: self.config.show_progress,
@@ -212,6 +227,8 @@ impl BpeTrainerBuilder {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Eq)]
 pub struct BpeTrainer {
+    #[serde(default)]
+    enforce_utf8_boundaries: bool,
     /// The minimum frequency a pair must have to produce a merge operation
     pub min_frequency: u64,
     /// The target vocabulary size
@@ -584,6 +601,9 @@ impl BpeTrainer {
 
             // Insert new token if it does not already exist
             let new_token = format!("{part_a}{part_b}");
+            if self.enforce_utf8_boundaries && !safe_utf8_piece(&new_token) {
+                continue;
+            }
             let new_token_id = word_to_id
                 .get(&CompactString::from(&new_token))
                 .copied()
@@ -735,6 +755,31 @@ mod tests {
     use super::{BpeTrainer, Merges};
     use ahash::AHashMap;
     use compact_str::CompactString;
+
+    #[test]
+    fn byte_seed_merges_respect_utf8_character_boundaries() {
+        let mapped = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .map(|b| tk_encode::utils::byte_level::BYTES_CHAR_LOOKUP[*b as usize])
+                .collect::<String>()
+        };
+        for bytes in [
+            vec![0xE0, 0xA4],
+            vec![0xE0, 0xA4, 0x95],
+            "कa".as_bytes().to_vec(),
+        ] {
+            assert!(super::safe_utf8_piece(&mapped(&bytes)));
+        }
+        for bytes in [
+            vec![0xA4, 0x95],
+            vec![b'a', 0xE0],
+            vec![0xC0, 0xAF],
+            vec![0xED, 0xA0],
+        ] {
+            assert!(!super::safe_utf8_piece(&mapped(&bytes)));
+        }
+    }
 
     #[test]
     fn test_train() {

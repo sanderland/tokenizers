@@ -82,3 +82,39 @@ of texts rather than many small tasks. `examples/multiprocessing_workers.py` is 
 - `make style` / `make check-style` regenerate the stub, then format/lint the Rust and
   Python sides and type-check with `ty`. CI runs `make check-style` and fails if the
   regenerated stub differs from the committed one.
+
+### Training
+
+Train a tokenizer from UTF-8 text files or an iterable of strings:
+
+```python
+from tokenizers import Tokenizer, trainers
+
+trainer = trainers.MinGramTrainer(vocab_size=8000, show_progress=False)
+tokenizer = Tokenizer()
+tokenizer.train_from_iterator((line for line in ["some text", "more text"]), trainer=trainer)
+tokenizer.save("tokenizer.json")
+
+# Convenience form: create a tokenizer directly from files.
+tokenizer = trainer.train(["corpus.txt"])
+```
+
+`BpeTrainer`, `UnigramTrainer`, and `MinGramTrainer` are available in
+`tokenizers.trainers`. Unigram-family trainers accept `seed_init="substrings"`
+or `"bpe"`; MinGram also accepts `prune_criterion="minimum_increase"`.
+Training a tokenizer loaded from a file preserves its preprocessing and
+post-processing configuration, and trains on the same normalized spans used
+at encoding time. Iterator training currently collects the corpus in memory.
+
+Use `alphabet_mode="byte_level"` with any trainer to train
+on the reversible 256-symbol byte alphabet, with the corresponding normalizer
+and decoder installed on a newly created tokenizer. `"legacy"` retains the
+original Unigram character alphabet; `"utf8"` selects the UTF-8 fallback
+inventory. `initial_alphabet` accepts additional required single characters.
+
+To reserve a fixed digit inventory, pass `fixed_digits="single"` (10 digits),
+`"single_marked"` (40 boundary forms), or `"triples"` (1,110 decimal
+strings of one to three digits, grouped from the right). BPE rejects fixed-digit
+training. The matching splitter
+is installed in newly created tokenizers. Fixed-digit training on an existing
+pipeline is rejected because its pre-tokenizer may split digit runs first.

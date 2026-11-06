@@ -556,6 +556,92 @@ impl IntoIterator for EncodeHandle {
 }
 
 impl PipelineTokenizer {
+    /// Replace the trained vocabulary, preserving preprocessing and metadata.
+    /// Template and padding ids are rebound by spelling to avoid stale ids.
+    pub fn with_model_and_added_vocabulary(
+        &self,
+        model: PipelineModel,
+        added: BucketAddedVocabulary,
+    ) -> Result<Self> {
+        let new_id = |text: &str| added.token_to_id(text).or_else(|| model.token_to_id(text));
+        let rebind = |template: &Template| -> Result<Template> {
+            let mut template = template.clone();
+            for run in [
+                &mut template.prefix,
+                &mut template.infix,
+                &mut template.suffix,
+            ] {
+                for (id, _) in run.iter_mut() {
+                    let text = self
+                        .inner
+                        .added_vocabulary
+                        .simple_id_to_token(id.id())
+                        .or_else(|| self.inner.model.id_to_token(id.id()))
+                        .ok_or("post-processor references an unknown old token id")?;
+                    *id = new_id(&text)
+                        .ok_or_else(|| {
+                            format!("trained vocabulary is missing post-processor token {text:?}")
+                        })?
+                        .into();
+                }
+            }
+            Ok(template)
+        };
+        let post_processor = PipelinePostProcessor {
+            single: rebind(&self.inner.post_processor.single)?,
+            pair: rebind(&self.inner.post_processor.pair)?,
+        };
+        let mut padding = self.inner.padding.clone();
+        if let Some(params) = &mut padding {
+            params.pad_id = new_id(&params.pad_token)
+                .ok_or("trained vocabulary is missing its padding token")?;
+        }
+        Ok(Self::from_parts(
+            added,
+            self.inner.normalizers.clone(),
+            self.inner.pre_tokenizer.clone(),
+            model,
+            post_processor,
+            self.inner.decoder.clone(),
+            self.inner.role_to_token.clone(),
+            padding,
+            self.inner.truncation.clone(),
+        ))
+    }
+
+    /// Produce training spans using the same added-token extraction,
+    /// normalizers and pre-tokenizer as inference. Added tokens are skipped.
+    pub fn preprocess_for_training(&self, input: &str) -> Result<Vec<String>> {
+        let mut output = Vec::new();
+        let mut scratch = PreTokenizerScratch::default();
+        let mut spans = Vec::new();
+        for segment in
+            SpecialSegmentIterator::new(input, &self.inner.added_vocabulary, false, false)
+        {
+            if let Segment::Text { text, input_offset } = segment {
+                let normalized = normalize_all(&self.inner.normalizers, text, input_offset)?;
+                for segment in SpecialSegmentIterator::new(
+                    &normalized,
+                    &self.inner.added_vocabulary,
+                    true,
+                    false,
+                ) {
+                    if let Segment::Text { text, .. } = segment {
+                        if text.len() > u32::MAX as usize {
+                            return Err("training span is too long to pre-tokenize".into());
+                        }
+                        spans.clear();
+                        self.inner
+                            .pre_tokenizer
+                            .pre_tokenize(text, &mut scratch, &mut spans)?;
+                        output.extend(spans.iter().map(|span| text[span.range()].to_owned()));
+                    }
+                }
+            }
+        }
+        Ok(output)
+    }
+
     pub fn get_model(&self) -> &PipelineModel {
         &self.inner.model
     }
@@ -1030,6 +1116,21 @@ pub enum PipelineModel {
 }
 
 impl PipelineModel {
+    pub fn token_to_id(&self, token: &str) -> Option<u32> {
+        match self {
+            Self::BPE(model) => model.to_config().ok()?.vocab.get(token).copied(),
+            #[cfg(feature = "unigram")]
+            Self::Unigram(model) => model.token_to_id(token),
+            #[cfg(feature = "wordlevel")]
+            Self::WordLevel(model) => model.token_to_id(token),
+            #[cfg(feature = "wordpiece")]
+            Self::WordPiece(model) => model
+                .vocab()
+                .into_iter()
+                .find_map(|(text, id)| (text == token).then_some(id)),
+        }
+    }
+
     /// `id -> token` used by [`PipelineTokenizer::decode`]
     pub fn id_to_token(&self, id: u32) -> Option<String> {
         match self {
