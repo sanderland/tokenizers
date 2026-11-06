@@ -20,7 +20,7 @@ from compare_mingram_compression import (
     UTF8PretokenizerConfig,
 )
 
-from tokenizers import Tokenizer, trainers
+from tokenizers import Tokenizer, decoders, models, normalizers, trainers
 
 
 def texts(path):
@@ -64,14 +64,16 @@ def main():
         seed_factor=1.1,
         show_progress=False,
     )
-    tokenizer = Tokenizer()
+    tokenizer = Tokenizer(models.Unigram([]))
+    tokenizer.normalizer = normalizers.ByteLevel()
+    tokenizer.decoder = decoders.ByteLevel()
     tokenizer.train_from_iterator(chunks(train_docs), trainer=trainer)
     test_chunks = list(chunks(test_docs))
     with tempfile.TemporaryDirectory(prefix="python-mingram-") as tmp:
         path = Path(tmp) / "tokenizer.json"
         tokenizer.save(path)
         config = json.loads(path.read_text())
-        loaded = Tokenizer.from_file(path)
+        loaded = Tokenizer.from_file(path).compile()
         encoded = loaded.encode_batch(test_chunks)
         assert all(
             loaded.decode(enc.ids) == text

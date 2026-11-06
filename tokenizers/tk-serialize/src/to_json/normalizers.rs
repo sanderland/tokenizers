@@ -93,6 +93,9 @@ fn write_one(out: &mut Out, normalizer: &PipelineNormalizer) -> Result<()> {
                 policy.validate()?;
                 out.field_usize("digit_group_size", policy.group_size);
                 out.field_bool("digit_boundary_markers", policy.boundary_markers);
+            } else {
+                out.field_null("digit_group_size");
+                out.field_bool("digit_boundary_markers", false);
             }
             out.obj_close();
         }

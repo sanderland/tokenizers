@@ -38,6 +38,7 @@ def main():
     tokenizer.train(args.files, trainer=trainer)
     tokenizer.save(args.output)
     loaded = Tokenizer.from_file(args.output)
+    loaded = loaded.compile()
     for sample in ["Hello 1234567", "नमस्ते हिन्दी", "น้ำ ข้าว"]:
         encoded = loaded.encode(sample)
         print(

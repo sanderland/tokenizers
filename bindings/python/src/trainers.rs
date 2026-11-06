@@ -107,6 +107,7 @@ pub fn train(
         .into_iter()
         .map(|s| AddedToken::from(s, true))
         .collect();
+    let source_model = template.as_ref().and_then(|t| t.model_config());
     let template = template
         .map(|t| t.training_template())
         .transpose()?
@@ -232,6 +233,7 @@ pub fn train(
             added_special.push(token.clone());
         }
     }
+    let trained_options = source_model.clone();
     let (model, ids, size, decoder) = py.detach(move || -> PyResult<_> {
         let process = |s: &str| {
             let mut remaining = s;
@@ -299,13 +301,31 @@ pub fn train(
                         ));
                     }
                 }
-                let mut t = BpeTrainer::builder()
+                let config = source_model
+                    .as_ref()
+                    .filter(|m| m.get("type").and_then(|v| v.as_str()) == Some("BPE"));
+                let option = |key: &str| {
+                    config
+                        .and_then(|m| m.get(key))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned)
+                };
+                let prefix = option("continuing_subword_prefix");
+                let suffix = option("end_of_word_suffix");
+                let model_unk = option("unk_token").or(unk_token);
+                let mut builder = BpeTrainer::builder()
                     .vocab_size(vocab_size as usize)
                     .show_progress(show_progress)
                     .special_tokens(special.clone())
                     .min_frequency(min_frequency)
-                    .initial_alphabet(bpe_alphabet)
-                    .build();
+                    .initial_alphabet(bpe_alphabet);
+                if let Some(value) = &prefix {
+                    builder = builder.continuing_subword_prefix(value.clone());
+                }
+                if let Some(value) = &suffix {
+                    builder = builder.end_of_word_suffix(value.clone());
+                }
+                let mut t = builder.build();
                 t.feed(sequences.into_iter(), process).map_err(err)?;
                 let (vocab, merges, _) = t.train_vocab().map_err(err)?;
                 let ids = special
@@ -320,7 +340,29 @@ pub fn train(
                 let model = PipelineBPE::from_config(BpeConfig {
                     vocab,
                     merges,
-                    unk_token,
+                    unk_token: model_unk,
+                    continuing_subword_prefix: prefix,
+                    end_of_word_suffix: suffix,
+                    fuse_unk: config
+                        .and_then(|m| m.get("fuse_unk"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    byte_fallback: config
+                        .and_then(|m| m.get("byte_fallback"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    ignore_merges: config
+                        .and_then(|m| m.get("ignore_merges"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    byte_level: config
+                        .and_then(|m| m.get("byte_level"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    dropout: config
+                        .and_then(|m| m.get("dropout"))
+                        .and_then(|v| v.as_f64())
+                        .map(|v| v as f32),
                     ..Default::default()
                 })
                 .map_err(err)?;
@@ -428,13 +470,12 @@ pub fn train(
         )
         .map_err(err)?;
     if let Some(template) = template {
-        return Ok(Tokenizer::from_pipeline(
-            template
-                .with_model_and_added_vocabulary(model, added)
-                .map_err(err)?,
-        ));
+        let pipeline = template
+            .with_model_and_added_vocabulary(model, added)
+            .map_err(err)?;
+        return Tokenizer::from_trained_pipeline(pipeline, trained_options.as_deref());
     }
-    Ok(Tokenizer::from_pipeline(PipelineTokenizer::from_parts(
+    Tokenizer::from_pipeline(PipelineTokenizer::from_parts(
         added,
         if byte_level {
             vec![tk::pipeline::PipelineNormalizer::ByteLevel(ByteLevel::new())]
@@ -451,5 +492,5 @@ pub fn train(
         BTreeMap::new(),
         None,
         None,
-    )))
+    ))
 }

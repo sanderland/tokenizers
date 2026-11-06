@@ -98,7 +98,7 @@ fn push_normalizer(cfg: &Json<'_>, out: &mut Vec<PipelineNormalizer>) -> Result<
                 allcaps_min,
                 cfg.need(&owner, "marks_part_of_words", Json::as_bool)?,
             );
-            if let Some(width) = cfg.field("digit_group_size") {
+            if let Some(width) = cfg.field("digit_group_size").filter(|width| !width.is_null()) {
                 marking = marking.with_fixed_digits(
                     tk_encode::pre_tokenizers::fixed_digits::FixedDigits {
                         group_size: width.as_usize().ok_or("invalid digit_group_size")?,

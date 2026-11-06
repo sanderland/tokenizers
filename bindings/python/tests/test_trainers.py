@@ -1,39 +1,42 @@
-from tokenizers import Tokenizer, create_claude_tokenizer, trainers
+from tokenizers import Tokenizer, create_claude_tokenizer, models, trainers
 
 
 def test_mingram_iterator_and_save(tmp_path):
     trainer = trainers.MinGramTrainer(vocab_size=400, show_progress=False)
     tokenizer = trainer.train_from_iterator(iter(["hello world", "hello world again"]))
     for text in ["hello world", "unseen 🦊"]:
-        assert tokenizer.decode(tokenizer.encode(text).ids) == text
+        assert tokenizer.compile().decode(tokenizer.compile().encode(text).ids) == text
     path = tmp_path / "tokenizer.json"
     tokenizer.save(path)
     loaded = Tokenizer.from_file(path)
-    assert loaded.decode(loaded.encode("unseen 🦊").ids) == "unseen 🦊"
+    assert loaded.compile().decode(loaded.compile().encode("unseen 🦊").ids) == "unseen 🦊"
 
 
 def test_bpe_training_files(tmp_path):
     path = tmp_path / "corpus.txt"
     path.write_text("hello world\nhello world\n", encoding="utf-8")
     tokenizer = trainers.BpeTrainer(vocab_size=100, show_progress=False).train([path])
-    assert tokenizer.decode(tokenizer.encode("hello world").ids) == "hello world"
+    assert tokenizer.compile().decode(tokenizer.compile().encode("hello world").ids) == "hello world"
 
 
 def test_unigram_legacy_seed():
     tokenizer = trainers.UnigramTrainer(
         vocab_size=400, show_progress=False, seed_init="substrings"
     ).train_from_iterator(["hello world", "hello world"])
-    assert tokenizer.decode(tokenizer.encode("hello world").ids) == "hello world"
+    assert tokenizer.compile().decode(tokenizer.compile().encode("hello world").ids) == "hello world"
 
 
 def test_tokenizer_in_place_training():
-    tokenizer = Tokenizer()
+    tokenizer = Tokenizer(models.Unigram([]))
+    from tokenizers import decoders
+
+    tokenizer.decoder = decoders.ByteFallback()
     result = tokenizer.train_from_iterator(
         ["hello world", "hello world"],
         trainer=trainers.MinGramTrainer(vocab_size=400, show_progress=False),
     )
     assert result is None
-    assert tokenizer.decode(tokenizer.encode("unseen 🦊").ids) == "unseen 🦊"
+    assert tokenizer.compile().decode(tokenizer.compile().encode("unseen 🦊").ids) == "unseen 🦊"
 
 
 def test_byte_level_unigram_and_mingram():
@@ -41,7 +44,7 @@ def test_byte_level_unigram_and_mingram():
         trainer = cls(vocab_size=300, alphabet_mode="byte_level", show_progress=False)
         tokenizer = trainer.train_from_iterator(["hello world", "hello there"])
         for text in ("hello world", "unseen 🦊", "\x00\n"):
-            assert tokenizer.decode(tokenizer.encode(text).ids) == text
+            assert tokenizer.compile().decode(tokenizer.compile().encode(text).ids) == text
 
 
 def test_retraining_preserves_preprocessing(tmp_path):
@@ -56,7 +59,7 @@ def test_retraining_preserves_preprocessing(tmp_path):
     path.write_text(json.dumps(config))
     tokenizer = Tokenizer.from_file(path)
     tokenizer.train_from_iterator(["HELLO THERE", "HELLO THERE"], trainer=trainer)
-    assert tokenizer.decode(tokenizer.encode("HELLO THERE").ids) == "hello there"
+    assert tokenizer.compile().decode(tokenizer.compile().encode("HELLO THERE").ids) == "hello there"
 
 
 def test_fixed_digit_inventories(tmp_path):
@@ -76,7 +79,10 @@ def test_fixed_digit_inventories(tmp_path):
             vocab = [entry[0] for entry in config["model"]["vocab"]]
             fixed = [v for v in vocab if v.strip("\ufdd0\ufdd1").isascii() and v.strip("\ufdd0\ufdd1").isdigit()]
             assert len(fixed) == count
-            assert tokenizer.decode(tokenizer.encode("hello 1234567 world").ids) == "hello 1234567 world"
+            assert (
+                tokenizer.compile().decode(tokenizer.compile().encode("hello 1234567 world").ids)
+                == "hello 1234567 world"
+            )
             assert "1234567" not in vocab
 
 
@@ -88,7 +94,7 @@ def test_byte_level_digits_survive_serialization(tmp_path):
     tokenizer.save(path)
     loaded = Tokenizer.from_file(path)
     text = "number 001234567 🦊"
-    assert loaded.decode(loaded.encode(text).ids) == text
+    assert loaded.compile().decode(loaded.compile().encode(text).ids) == text
 
 
 def test_byte_level_bpe_round_trips_unseen_unicode(tmp_path):
@@ -98,7 +104,7 @@ def test_byte_level_bpe_round_trips_unseen_unicode(tmp_path):
     tokenizer.save(path)
     loaded = Tokenizer.from_file(path)
     for text in ("hello there", "unseen 🦊", "\x00\n"):
-        assert loaded.decode(loaded.encode(text).ids) == text
+        assert loaded.compile().decode(loaded.compile().encode(text).ids) == text
 
 
 def test_failed_retraining_keeps_pipeline_and_metadata(tmp_path):
@@ -119,10 +125,10 @@ def test_failed_retraining_keeps_pipeline_and_metadata(tmp_path):
     }
     path.write_text(json.dumps(config))
     tokenizer = Tokenizer.from_file(path)
-    before = tokenizer.encode("x").ids
+    before = tokenizer.compile().encode("x").ids
     with pytest.raises(ValueError, match="missing post-processor token"):
         tokenizer.train_from_iterator(["yyyyy", "yyyyy"], trainer=trainer)
-    assert tokenizer.encode("x").ids == before
+    assert tokenizer.compile().encode("x").ids == before
     after = tmp_path / "after.json"
     tokenizer.save(after)
     assert json.loads(after.read_text())["post_processor"] == config["post_processor"]
@@ -154,7 +160,7 @@ def test_utf8_byte_alphabet_has_exactly_243_entries(tmp_path):
         assert spellings == expected
         loaded = Tokenizer.from_file(path)
         for text in ("unseen 🦊", "\x00\n", "\u0080\u07ff\u0800\uffff\U00010000\U0010ffff"):
-            assert loaded.decode(loaded.encode(text).ids) == text
+            assert loaded.compile().decode(loaded.compile().encode(text).ids) == text
 
 
 def test_impossible_utf8_bytes_cannot_expand_initial_alphabet():
@@ -174,16 +180,18 @@ def test_claude_factory_train_and_reload(tmp_path):
     trainer = trainers.MinGramTrainer(vocab_size=1600, alphabet_mode="utf8", show_progress=False)
     tokenizer.train_from_iterator(iter(corpus), trainer=trainer)
     text = "Hello น้ำ नमस्ते 1234567 world “yes” 🦊"
-    assert tokenizer.decode(tokenizer.encode(text).ids) == 'Hello น้ำ नमस्ते 1234567 world "yes" 🦊'
-    pieces = tokenizer.decode_tokens(tokenizer.encode("น้ำ 1234567").ids)
+    assert tokenizer.compile().decode(tokenizer.compile().encode(text).ids) == 'Hello น้ำ नमस्ते 1234567 world "yes" 🦊'
+    pieces = tokenizer.compile().decode_tokens(tokenizer.compile().encode("น้ำ 1234567").ids)
     assert any("น้ำ" in piece for piece in pieces)
     assert pieces[-3:] == ["1", "234", "567"]
     path = tmp_path / "claude.json"
     tokenizer.save(path)
     loaded = Tokenizer.from_file(path)
-    assert loaded.decode(loaded.encode(text).ids) == tokenizer.decode(tokenizer.encode(text).ids)
+    assert loaded.compile().decode(loaded.compile().encode(text).ids) == tokenizer.compile().decode(
+        tokenizer.compile().encode(text).ids
+    )
     loaded.train_from_iterator(corpus, trainer=trainer)
-    assert loaded.decode_tokens(loaded.encode("1234567").ids) == ["1", "234", "567"]
+    assert loaded.compile().decode_tokens(loaded.compile().encode("1234567").ids) == ["1", "234", "567"]
 
 
 def test_claude_factory_presets_and_explicit_digits():
@@ -198,8 +206,8 @@ def test_claude_factory_presets_and_explicit_digits():
         trainer = trainers.MinGramTrainer(vocab_size=400, alphabet_mode="utf8", show_progress=False)
         tokenizer.train_from_iterator(["hello น้ำ"] * 5, trainer=trainer)
         expected = '"hello"' if preset != "v47" else "“hello”"
-        assert tokenizer.decode(tokenizer.encode("“hello”").ids) == expected
-        pieces = tokenizer.decode_tokens(tokenizer.encode("น้ำ").ids)
+        assert tokenizer.compile().decode(tokenizer.compile().encode("“hello”").ids) == expected
+        pieces = tokenizer.compile().decode_tokens(tokenizer.compile().encode("น้ำ").ids)
         assert any("น้ำ" in piece for piece in pieces) == (preset == "fixed")
     tokenizer = create_claude_tokenizer(digits="single")
     with pytest.raises(ValueError, match="byte|Byte|UTF|utf"):
@@ -210,9 +218,9 @@ def test_claude_marked_digit_borders():
     tokenizer = create_claude_tokenizer(digits="single_marked")
     trainer = trainers.MinGramTrainer(vocab_size=400, alphabet_mode="utf8", show_progress=False)
     tokenizer.train_from_iterator(["hello 123 world"] * 5, trainer=trainer)
-    pieces = tokenizer.decode_tokens(tokenizer.encode("hello 123 world").ids)
+    pieces = tokenizer.compile().decode_tokens(tokenizer.compile().encode("hello 123 world").ids)
     assert "\ufdd01" in pieces and "3\ufdd1" in pieces
-    assert tokenizer.decode(tokenizer.encode("hello 123 world").ids) == "hello 123 world"
+    assert tokenizer.compile().decode(tokenizer.compile().encode("hello 123 world").ids) == "hello 123 world"
 
 
 def test_claude_unigram_unseen_unicode_and_file_training(tmp_path):
@@ -223,4 +231,39 @@ def test_claude_unigram_unseen_unicode_and_file_training(tmp_path):
         [corpus], trainer=trainers.UnigramTrainer(vocab_size=500, alphabet_mode="utf8", show_progress=False)
     )
     text = "Hello น้ำ 🦊"
-    assert tokenizer.decode(tokenizer.encode(text).ids) == text
+    assert tokenizer.compile().decode(tokenizer.compile().encode(text).ids) == text
+
+
+def test_bpe_training_preserves_model_options_and_rebinds_padding():
+    import json
+
+    from tokenizers import Padding, Tokenizer, models, trainers
+
+    tokenizer = Tokenizer(
+        models.BPE(
+            vocab={"[PAD]": 0, "[UNK]": 1, "a": 2}, unk_token="[UNK]", fuse_unk=True, ignore_merges=True, dropout=0.0
+        )
+    )
+    tokenizer.padding = Padding(pad_id=0, pad_token="[PAD]", length=4)
+    trainer = trainers.BpeTrainer(vocab_size=100, show_progress=False, special_tokens=["[UNK]", "[PAD]"])
+    tokenizer.train_from_iterator(["aaa aaa", "aaa aaa"], trainer=trainer)
+    config = json.loads(tokenizer.to_str())
+    assert config["model"]["fuse_unk"] is True
+    assert config["model"]["ignore_merges"] is True
+    assert config["model"]["dropout"] == 0.0
+    assert config["model"]["unk_token"] == "[UNK]"
+    assert tokenizer.padding.pad_id == config["model"]["vocab"]["[PAD]"] == 1
+    assert tokenizer.compile().encode("a").ids[-1] == 1
+
+
+def test_training_untrained_bpe_with_unknown_token():
+    from tokenizers import Tokenizer, models, trainers
+
+    tokenizer = Tokenizer(models.BPE(unk_token="[UNK]", fuse_unk=True))
+    tokenizer.train_from_iterator(
+        ["abc abc"] * 3,
+        trainer=trainers.BpeTrainer(vocab_size=100, special_tokens=["[UNK]"], show_progress=False),
+    )
+    assert tokenizer.model.unk_token == "[UNK]"
+    compiled = tokenizer.compile()
+    assert compiled.decode_tokens(compiled.encode("z").ids) == ["[UNK]"]

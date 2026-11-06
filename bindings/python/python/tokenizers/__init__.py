@@ -1,23 +1,39 @@
-"""Python bindings for this fork of Hugging Face Tokenizers."""
+"""
+Python bindings for Hugging Face's Tokenizers rust library
 
-from . import decoders, models, normalizers, pre_tokenizers, trainers
-from .implementations import create_claude_tokenizer
-from .tokenizers import Encoding, Padding, Tokenizer, Truncation, __version__
-from .trainers import BpeTrainer, MinGramTrainer, UnigramTrainer
+Encode text to token ids and decode token ids back to text
+"""
+
+from . import decoders, models, normalizers, pre_tokenizers, processors
+from .tokenizers import (
+    CompiledTokenizer,
+    Component,
+    Encoding,
+    Padding,
+    Regex,
+    Tokenizer,
+    Truncation,
+    __version__,
+)
 
 __all__ = [
+    "CompiledTokenizer",
+    "Component",
     "Encoding",
     "Padding",
+    "Regex",
     "Tokenizer",
     "Truncation",
     "__version__",
-    "trainers",
-    "BpeTrainer",
-    "MinGramTrainer",
-    "UnigramTrainer",
+    "decoders",
     "models",
     "normalizers",
     "pre_tokenizers",
-    "decoders",
-    "create_claude_tokenizer",
+    "processors",
 ]
+
+from . import trainers
+from .implementations import create_claude_tokenizer
+from .trainers import BpeTrainer, MinGramTrainer, UnigramTrainer
+
+__all__ += ["trainers", "BpeTrainer", "MinGramTrainer", "UnigramTrainer", "create_claude_tokenizer"]

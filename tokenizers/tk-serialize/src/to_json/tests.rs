@@ -267,8 +267,8 @@ const BERT: &[(&str, &str)] = &[];
 const MARK: &[(&str, &str)] = &[
     ("normalizer", r#"{"type": "ClaudeNormalizer", "fold_quotes": true}"#),
     ("normalizer", r#"{"type": "ClaudeNormalizer", "fold_quotes": false}"#),
-    ("normalizer", r#"{"type": "MarkBoundaries", "allcaps_min": 4, "marks_part_of_words": false}"#),
-    ("normalizer", r#"{"type": "MarkBoundaries", "allcaps_min": null, "marks_part_of_words": true}"#),
+    ("normalizer", r#"{"type": "MarkBoundaries", "allcaps_min": 4, "marks_part_of_words": false, "digit_group_size": null, "digit_boundary_markers": false}"#),
+    ("normalizer", r#"{"type": "MarkBoundaries", "allcaps_min": null, "marks_part_of_words": true, "digit_group_size": null, "digit_boundary_markers": false}"#),
     ("decoder", r#"{"type": "Unmark"}"#),
 ];
 #[cfg(not(feature = "normalizers"))]

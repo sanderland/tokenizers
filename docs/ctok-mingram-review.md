@@ -85,19 +85,24 @@ Pipeline components are configured on `Tokenizer`, separately from its trainer:
 ```python
 from tokenizers import Tokenizer, decoders, models, normalizers, pre_tokenizers, trainers
 
-tokenizer = Tokenizer(models.Unigram(byte_fallback=True))
+tokenizer = Tokenizer(models.Unigram([], byte_fallback=True))
 tokenizer.normalizer = normalizers.Sequence([
     normalizers.ClaudeNormalizer(fold_quotes=True),
-    normalizers.MarkBoundaries(marks_part_of_words=True, fixed_digits="triples"),
+    normalizers.MarkBoundaries(
+        allcaps_min=4, marks_part_of_words=True,
+        digit_group_size=3, digit_boundary_markers=False,
+    ),
 ])
 tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
-    pre_tokenizers.MarkSplit(), pre_tokenizers.FixedDigits.triples(),
+    pre_tokenizers.MarkSplit(), pre_tokenizers.FixedDigits(group_size=3, boundary_markers=False),
 ])
 tokenizer.decoder = decoders.Unmark()
 tokenizer.train(["corpus.txt"], trainer=trainers.MinGramTrainer(
     vocab_size=8000, alphabet_mode="utf8",
 ))
 tokenizer.save("claude-fixed.json")
+compiled = tokenizer.compile()
+print(compiled.encode("Hello 1234567").ids)
 ```
 
 The optional `create_claude_tokenizer(digits="triples", preset="fixed")`
@@ -110,8 +115,9 @@ trainer settings and unsafe numeric split order are errors.
 
 The same pipeline works with `UnigramTrainer(alphabet_mode="utf8")`.
 Cleanup is intentionally lossy: decoding recovers the recipe's NFC and
-quote/control/space normalization. Components are immutable snapshots; replace
-the tokenizer property to change one. The marked Claude stream currently uses
+quote/control/space normalization. Upstream components are editable views of
+the tokenizer specification. `compile()` produces an execution snapshot;
+compile again after changing or training the tokenizer. The marked Claude stream currently uses
 UTF-8 character/fallback mode. Byte-alphabet pipelines remain separate because
 mapping markers to byte symbols before `MarkSplit` would erase its cuts.
 
@@ -161,9 +167,11 @@ The piece-length bound counts alphabet symbols: bytes in byte mode and
 Unicode characters in the other modes. Set it explicitly for research comparisons.
 
 ```python
-from tokenizers import Tokenizer, trainers
+from tokenizers import Tokenizer, decoders, models, normalizers, trainers
 
-tokenizer = Tokenizer()
+tokenizer = Tokenizer(models.Unigram([]))
+tokenizer.normalizer = normalizers.ByteLevel()
+tokenizer.decoder = decoders.ByteLevel()
 tokenizer.train_from_iterator(
     ["some multilingual training text", "more text"],
     trainer=trainers.UnigramTrainer(
@@ -397,7 +405,7 @@ actual alphabets and sizes recorded. The local fixture experiments above
 do not reproduce the paper's full training scale, morphology evaluation,
 or downstream language-model results.
 
-## Verification after the second pass
+## Verification before the upstream sync
 
 363 Rust unit tests pass across encoder, serializer and trainers; two fixture-based
 tests are ignored. Twenty-five Python component and trainer tests pass, covering both Unigram
@@ -410,6 +418,29 @@ fallback inventories still fail. The Python file-training CLI runs successfully
 for both trainers. A minimal
 Unigram-only build also passes without BPE enabled. The broader Python suite
 requires tokenizer fixture files absent from this checkout and was not run.
+
+## Upstream sync
+
+The branch incorporates Hugging Face upstream `main` at `dd231a41`.
+Upstream's native component classes replace the temporary Python configuration
+wrappers introduced earlier in this branch. `Tokenizer` holds an editable
+specification, and `Tokenizer.compile()` returns the `CompiledTokenizer` used
+for encoding and decoding. The MinGram/Unigram trainers and Claude factory are
+ported to that API; training preserves the specification's preprocessing.
+
+The follow-up review identified three problems in the branch's new Python API:
+BPE options lost during training, stale Python padding IDs after retraining,
+and early rejection of an untrained BPE model with an unknown-token name.
+The empty-corpus Unigram suffix-array panic predates this branch and is also
+present in upstream's trainer source; a new core guard rejects empty or
+zero-weight spans after preprocessing.
+
+After integration, 387 Rust tests pass with two ignored. The 27 Python
+component and trainer tests pass, including regressions for the three Python
+review findings. Another 17 upstream composition and regex tests pass.
+The Python MinGram compression comparison still matches the
+reference at 79,180 held-out tokens with the 243-byte alphabet. The broader
+fixture-dependent Python suite requires tokenizer data absent from this checkout.
 
 ## Reproduce this review
 

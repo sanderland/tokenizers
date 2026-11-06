@@ -1,7 +1,6 @@
 """Optional factories that assemble explicit pipeline components."""
 
 from . import decoders, models, normalizers, pre_tokenizers
-from ._components import digit_policy
 from .tokenizers import Tokenizer
 
 
@@ -13,13 +12,18 @@ def create_claude_tokenizer(*, digits, preset="fixed"):
     """
     if preset not in ("fixed", "v3", "v47"):
         raise ValueError("preset must be fixed, v3, or v47")
-    policy = None if digits is None else pre_tokenizers.FixedDigits(*digit_policy(digits))
-    marking = {
-        "fixed": normalizers.MarkBoundaries,
-        "v3": normalizers.MarkBoundaries.v3,
-        "v47": normalizers.MarkBoundaries.v47,
-    }[preset](fixed_digits=policy)
-    tokenizer = Tokenizer(models.Unigram(byte_fallback=True))
+    values = {"single": (1, False), "single_marked": (1, True), "triples": (3, False)}
+    if digits is not None and digits not in values:
+        raise ValueError("digits must be single, single_marked, triples, or None")
+    width, borders = values.get(digits, (None, False))
+    policy = None if width is None else pre_tokenizers.FixedDigits(width, borders)
+    marking = normalizers.MarkBoundaries(
+        allcaps_min=None if preset == "v47" else 4,
+        marks_part_of_words=preset == "fixed",
+        digit_group_size=width,
+        digit_boundary_markers=borders,
+    )
+    tokenizer = Tokenizer(models.Unigram([], byte_fallback=True))
     tokenizer.normalizer = normalizers.Sequence(
         [
             normalizers.ClaudeNormalizer(fold_quotes=preset != "v47"),

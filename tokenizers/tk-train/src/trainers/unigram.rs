@@ -446,6 +446,16 @@ impl UnigramTrainer {
         sentences: Vec<Sentence>,
         model: &mut Unigram,
     ) -> Result<Vec<AddedToken>> {
+        let sentences: Vec<_> = sentences
+            .into_iter()
+            .filter(|(text, count)| !text.is_empty() && *count > 0)
+            .collect();
+        if sentences.is_empty() {
+            return Err(
+                "Unigram requires non-empty training text with positive counts after preprocessing"
+                    .into(),
+            );
+        }
         seed::validate_alphabet(&sentences, &self.initial_alphabet, self.alphabet_mode)?;
         if let Some(policy) = self.fixed_digits {
             let prepared = super::fixed_digits::prepare(
@@ -618,6 +628,23 @@ impl Trainer for UnigramTrainer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_or_zero_weight_corpus_is_rejected() {
+        let trainer = UnigramTrainer::builder()
+            .show_progress(false)
+            .build()
+            .unwrap();
+        for corpus in [
+            vec![],
+            vec![(String::new(), 1)],
+            vec![("hello".to_owned(), 0)],
+        ] {
+            let mut model = Unigram::default();
+            let error = trainer.do_train(corpus, &mut model).unwrap_err();
+            assert!(error.to_string().contains("non-empty training text"));
+        }
+    }
 
     #[test]
     fn test_unk_token() {

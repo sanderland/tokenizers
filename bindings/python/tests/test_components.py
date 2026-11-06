@@ -9,17 +9,17 @@ from tokenizers import Tokenizer, create_claude_tokenizer, decoders, models, nor
 
 
 def test_explicit_unigram_pipeline_train_reload_and_replace(tmp_path):
-    tokenizer = Tokenizer(models.Unigram(byte_fallback=True))
+    tokenizer = Tokenizer(models.Unigram([], byte_fallback=True))
     tokenizer.normalizer = normalizers.Sequence(
         [
             normalizers.ClaudeNormalizer(fold_quotes=True),
-            normalizers.MarkBoundaries(marks_part_of_words=True, fixed_digits="triples"),
+            normalizers.MarkBoundaries(allcaps_min=4, marks_part_of_words=True, digit_group_size=3),
         ]
     )
     tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
         [
             pre_tokenizers.MarkSplit(),
-            pre_tokenizers.FixedDigits.triples(),
+            pre_tokenizers.FixedDigits(group_size=3),
         ]
     )
     tokenizer.decoder = decoders.Unmark()
@@ -32,44 +32,46 @@ def test_explicit_unigram_pipeline_train_reload_and_replace(tmp_path):
     tokenizer.train_from_iterator(corpus, trainer=trainer)
     text = "Hello น้ำ 1234567 “yes” 🦊"
     expected = 'Hello น้ำ 1234567 "yes" 🦊'
-    assert tokenizer.decode(tokenizer.encode(text).ids) == expected
-    assert tokenizer.decode_tokens(tokenizer.encode("1234567").ids) == ["1", "234", "567"]
+    assert tokenizer.compile().decode(tokenizer.compile().encode(text).ids) == expected
+    assert tokenizer.compile().decode_tokens(tokenizer.compile().encode("1234567").ids) == ["1", "234", "567"]
     path = tmp_path / "explicit.json"
     tokenizer.save(path)
     loaded = Tokenizer.from_file(path)
     assert isinstance(loaded.normalizer, normalizers.Sequence)
-    assert loaded.pre_tokenizer == tokenizer.pre_tokenizer
-    assert loaded.decoder == tokenizer.decoder
-    assert loaded.decode(loaded.encode(text).ids) == expected
-    assert pickle.loads(pickle.dumps(loaded)).decode(loaded.encode(text).ids) == expected
-    assert pickle.loads(pickle.dumps(loaded.normalizer)) == loaded.normalizer
-    assert len(loaded.model.vocab) <= 1600
+    assert repr(loaded.pre_tokenizer) == repr(tokenizer.pre_tokenizer)
+    assert repr(loaded.decoder) == repr(tokenizer.decoder)
+    assert loaded.compile().decode(loaded.compile().encode(text).ids) == expected
+    assert pickle.loads(pickle.dumps(loaded)).compile().decode(loaded.compile().encode(text).ids) == expected
+    assert repr(pickle.loads(pickle.dumps(loaded.normalizer))) == repr(loaded.normalizer)
+    assert len(json.loads(loaded.to_str())["model"]["vocab"]) <= 1600
 
 
 def test_explicit_bpe_and_byte_alphabet_unigram(tmp_path):
     for model, trainer in [
         (models.BPE(), trainers.BpeTrainer(vocab_size=270, alphabet_mode="byte_level", show_progress=False)),
-        (models.Unigram(), trainers.UnigramTrainer(vocab_size=270, alphabet_mode="byte_level", show_progress=False)),
+        (models.Unigram([]), trainers.UnigramTrainer(vocab_size=270, alphabet_mode="byte_level", show_progress=False)),
     ]:
         tokenizer = Tokenizer(model)
         tokenizer.normalizer = normalizers.ByteLevel()
         tokenizer.decoder = decoders.ByteLevel()
         tokenizer.train_from_iterator(["hello world"] * 3, trainer=trainer)
-        assert tokenizer.decode(tokenizer.encode("unseen 🦊").ids) == "unseen 🦊"
+        assert tokenizer.compile().decode(tokenizer.compile().encode("unseen 🦊").ids) == "unseen 🦊"
         path = tmp_path / "byte.json"
         tokenizer.save(path)
-        assert Tokenizer.from_file(path).decode(tokenizer.encode("unseen 🦊").ids) == "unseen 🦊"
+        assert Tokenizer.from_file(path).compile().decode(tokenizer.compile().encode("unseen 🦊").ids) == "unseen 🦊"
 
 
 def test_component_setters_are_atomic_and_validate_slot(tmp_path):
     tokenizer = Tokenizer(models.Unigram([("x", 0.0)]))
     tokenizer.normalizer = normalizers.Lowercase()
-    before = tokenizer.encode("X").ids
+    before = tokenizer.compile().encode("X").ids
     with pytest.raises(TypeError):
         tokenizer.normalizer = decoders.Unmark()
+    tokenizer.model = models.Unigram([("x", 0.0)], unk_id=9)
     with pytest.raises(ValueError):
-        tokenizer.model = models.Unigram([("x", 0.0)], unk_id=9)
-    assert tokenizer.encode("X").ids == before
+        tokenizer.compile()
+    tokenizer.model = models.Unigram([("x", 0.0)])
+    assert tokenizer.compile().encode("X").ids == before
     assert isinstance(tokenizer.normalizer, normalizers.Lowercase)
     tokenizer.normalizer = None
     assert tokenizer.normalizer is None
@@ -91,11 +93,11 @@ def test_fixed_digit_mismatches_and_unsafe_split_order_fail():
     tokenizer = create_claude_tokenizer(digits="triples")
     with pytest.raises(ValueError, match="digit|Digit"):
         tokenizer.train_from_iterator(["hello 1234567"], trainer=trainer)
-    tokenizer = Tokenizer(models.Unigram())
+    tokenizer = Tokenizer(models.Unigram([]))
     tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
         [
             pre_tokenizers.Digits(individual_digits=True),
-            pre_tokenizers.FixedDigits.triples(),
+            pre_tokenizers.FixedDigits(group_size=3),
         ]
     )
     with pytest.raises(ValueError, match="digit|Digit|split"):
@@ -103,7 +105,7 @@ def test_fixed_digit_mismatches_and_unsafe_split_order_fail():
 
 
 def test_explicit_configuration_is_not_overwritten_by_training():
-    tokenizer = Tokenizer(models.Unigram())
+    tokenizer = Tokenizer(models.Unigram([]))
     tokenizer.normalizer = normalizers.Lowercase()
     tokenizer.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
     tokenizer.decoder = decoders.Fuse()
@@ -113,14 +115,14 @@ def test_explicit_configuration_is_not_overwritten_by_training():
     assert isinstance(tokenizer.normalizer, normalizers.Lowercase)
     assert isinstance(tokenizer.pre_tokenizer, pre_tokenizers.WhitespaceSplit)
     assert isinstance(tokenizer.decoder, decoders.Fuse)
-    assert tokenizer.decode(tokenizer.encode("HELLO").ids) == "hello"
+    assert tokenizer.compile().decode(tokenizer.compile().encode("HELLO").ids) == "hello"
 
 
 def test_common_normalizers_and_component_snapshot_semantics():
     tokenizer = Tokenizer(models.Unigram([("é", 0.0), ("a", 0.0)]))
     tokenizer.normalizer = normalizers.NFC()
     tokenizer.decoder = decoders.Fuse()
-    assert tokenizer.decode(tokenizer.encode("e\u0301").ids) == "é"
+    assert tokenizer.compile().decode(tokenizer.compile().encode("e\u0301").ids) == "é"
     tokenizer.normalizer = normalizers.Sequence(
         [
             normalizers.NFD(),
@@ -128,13 +130,13 @@ def test_common_normalizers_and_component_snapshot_semantics():
             normalizers.Lowercase(),
         ]
     )
-    assert tokenizer.decode(tokenizer.encode("Á").ids) == "a"
+    assert tokenizer.compile().decode(tokenizer.compile().encode("Á").ids) == "a"
     snapshot = tokenizer.normalizer
     with pytest.raises(AttributeError):
         snapshot.normalizers = []
-    assert tokenizer.decode(tokenizer.encode("Á").ids) == "a"
+    assert tokenizer.compile().decode(tokenizer.compile().encode("Á").ids) == "a"
     model = models.Unigram([("é", -1.5)])
-    assert pickle.loads(pickle.dumps(model)) == model
+    assert repr(pickle.loads(pickle.dumps(model))) == repr(model)
 
 
 def test_bpe_cannot_learn_over_a_fixed_inventory():

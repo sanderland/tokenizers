@@ -6,7 +6,7 @@ If used in a production setting, please pin the version number.
 ## Install
 
 ```
-uv sync
+pip install --pre tokenizers
 ```
 
 
@@ -15,63 +15,78 @@ uv sync
 ```python
 from tokenizers import Padding, Tokenizer
 
+# A `Tokenizer` represents a tokenizer's spec (json) and can be edited.
+# You can load it from the JSON file
 tokenizer = Tokenizer.from_file("tokenizer.json")
-# Or the `tokenizer.json` of a model repo on the Hub. `huggingface_hub` downloads and caches it,
-# with the same cache, login token and offline switch as transformers.
+# Or load the `tokenizer.json` of a model repo on the Hub.
+# Downloads go through the `huggingface_hub` package
 tokenizer = Tokenizer.from_pretrained("openai-community/gpt2", revision="main")
 
-encoding = tokenizer.encode("Hello there, how are you?")
+# `compile()` compiles the specification to an optimized tokenizer in rust.
+# The resulting `CompiledTokenizer` object can encode text to token ids and decode ids back to text.
+# It's immutable and can be shared among threads.
+compiled = tokenizer.compile()
+
+encoding = compiled.encode("Hello there, how are you?")
 encoding.ids             # [101, 7592, 2045, 1010, 2129, 2024, 2017, 1029, 102]
 encoding.type_ids        # [0, 0, 0, 0, 0, 0, 0, 0, 0]
 encoding.attention_mask  # [1, 1, 1, 1, 1, 1, 1, 1, 1]
 
-# The same fields as numpy arrays. Each read returns a new copy that the caller owns.
+# The same fields as numpy arrays. Each read returns a *new copy* that the caller owns.
 encoding.ids_array             # array([101, 7592, 2045, 1010, 2129, 2024, 2017, 1029, 102], dtype=uint32)
 encoding.type_ids_array        # array([0, 0, 0, 0, 0, 0, 0, 0, 0], dtype=uint32)
 encoding.attention_mask_array  # array([1, 1, 1, 1, 1, 1, 1, 1, 1], dtype=uint32)
 torch.from_numpy(encoding.ids_array)  # no-copy translation
 
-tokenizer.encode("Hello", add_special_tokens=False).ids  # no [CLS]/[SEP]
-tokenizer.decode(encoding.ids)                           # "hello there, how are you?"
-tokenizer.decode(encoding.ids_array)                     # a numpy array works too
-tokenizer.decode(encoding.ids, skip_special_tokens=False)
+compiled.encode("Hello", add_special_tokens=False).ids  # no [CLS]/[SEP]
+compiled.decode(encoding.ids)                           # "hello there, how are you?"
+compiled.decode(encoding.ids_array)                     # a numpy array works too
+compiled.decode(encoding.ids, skip_special_tokens=False)
 
-# Override the `Padding` settings. `length=None` pads each batch to its longest
-# item; `None` switches padding off.
-tokenizer.padding = Padding(direction="left", pad_id=0, pad_token="[PAD]")
-short, long = tokenizer.encode_batch(["Hello", "Hello there, how are you?"])
+# Pad one call. `length=None` pads each batch to its longest item.
+short, long = compiled.encode_batch(
+    ["Hello", "Hello there, how are you?"],
+    padding=Padding(direction="left", pad_id=0, pad_token="[PAD]"),
+)
 len(short) == len(long)  # True
 short.attention_mask     # [0, 0, 0, 0, 0, 0, 1, 1, 1]
+compiled.encode("Hello", padding=Padding(length=16))  # exactly 16 ids
 
-tokenizer.padding = Padding(length=16)            # every encoding is exactly 16 ids
+# Padding and truncation can also be set on the spec.
+# `padding=None` switches the default off for one call.
 tokenizer.padding = Padding(pad_to_multiple_of=8)
-tokenizer.padding = None
-
-# Or for one call only, leaving the attribute as it is. `None` switches it off for that call.
-tokenizer.encode_batch(["Hello", "Hello there"], padding=Padding(length=16))
-tokenizer.encode("Hello", padding=None)
+padded = tokenizer.compile()
+padded.encode("Hello", padding=None)
 ```
 
 `examples/` holds a runnable script for each of these; `make examples` runs them all.
 
-## Worker processes
+## multiprocessing and Worker processes
 
 Every class here can be pickled, so a tokenizer can be sent to a worker process and its encodings
 sent back: `multiprocessing`, a PyTorch `DataLoader`, `datasets.map(num_proc=...)`.
 
+A pickled `CompiledTokenizer` carries its whole `tokenizer.json`, and unpickling compiles it again.
+With the `"spawn"` start method, we recommend compiling the tokenizer once per worker to avoid unpickle compilation overhead.
+
 ```python
-def encode(tokenizer, texts):
-    return tokenizer.encode_batch(texts)
+def compile_tokenizer(tokenizer):
+    global compiled
+    compiled = tokenizer.compile()
 
 
-with multiprocessing.get_context("spawn").Pool(4) as pool:
-    encoded = pool.starmap(encode, [(tokenizer, chunk) for chunk in chunks])
+def encode(text):
+    return compiled.encode(text)
+
+
+with multiprocessing.get_context("spawn").Pool(4, initializer=compile_tokenizer, initargs=(tokenizer,)) as pool:
+    encoded = list(pool.imap(encode, texts, chunksize=32))
 ```
 
-The tokenizer is pickled again with every task it is sent with, so give each worker one big chunk
-of texts rather than many small tasks. `examples/multiprocessing_workers.py` is the whole script.
+With the `"fork"` start method, compiling before starting the pool is recommended: the workers inherit the compiled tokenizer
+and nothing is pickled.
 
-## Day to day
+## Developers
 
 - `make develop` regenerates the `.pyi` stub, rebuilds the extension (debug) and reinstalls it
   in editable mode.
@@ -88,10 +103,11 @@ of texts rather than many small tasks. `examples/multiprocessing_workers.py` is 
 Train a tokenizer from UTF-8 text files or an iterable of strings:
 
 ```python
-from tokenizers import Tokenizer, trainers
+from tokenizers import Tokenizer, models, decoders, trainers
 
 trainer = trainers.MinGramTrainer(vocab_size=8000, show_progress=False)
-tokenizer = Tokenizer()
+tokenizer = Tokenizer(models.Unigram([]))
+tokenizer.decoder = decoders.ByteFallback()
 tokenizer.train_from_iterator((line for line in ["some text", "more text"]), trainer=trainer)
 tokenizer.save("tokenizer.json")
 
@@ -126,14 +142,14 @@ Configure the tokenizer's pipeline separately from the trainer:
 ```python
 from tokenizers import Tokenizer, decoders, models, normalizers, pre_tokenizers, trainers
 
-tokenizer = Tokenizer(models.Unigram(byte_fallback=True))
+tokenizer = Tokenizer(models.Unigram([], byte_fallback=True))
 tokenizer.normalizer = normalizers.Sequence([
     normalizers.ClaudeNormalizer(fold_quotes=True),
-    normalizers.MarkBoundaries(marks_part_of_words=True, fixed_digits="triples"),
+    normalizers.MarkBoundaries(allcaps_min=4, marks_part_of_words=True, digit_group_size=3),
 ])
 tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
     pre_tokenizers.MarkSplit(),
-    pre_tokenizers.FixedDigits.triples(),
+    pre_tokenizers.FixedDigits(group_size=3),
 ])
 tokenizer.decoder = decoders.Unmark()
 
@@ -167,14 +183,14 @@ Use `UnigramTrainer(alphabet_mode="utf8")` for plain Unigram with the same
 pipeline. The Claude marked stream currently uses UTF-8 character/fallback
 mode; byte-alphabet pipelines remain separate.
 
-Components are immutable configuration snapshots. Replace a property with a
-new component to change a tokenizer. Existing tokenizer JSON files still load.
+Components are editable shared configuration objects. Call `tokenizer.compile()`
+to make an immutable tokenizer for encoding and decoding. Existing tokenizer JSON files still load.
 The exposed constructors cover BPE/Unigram, common normalizers and splitters,
 and the decoders used here; they do not implement every historical HF method.
 In this fork, byte mapping is a `normalizers.ByteLevel()` component:
 
 ```python
-tokenizer = Tokenizer(models.Unigram())
+tokenizer = Tokenizer(models.Unigram([]))
 tokenizer.normalizer = normalizers.ByteLevel()
 tokenizer.decoder = decoders.ByteLevel()
 tokenizer.train_from_iterator(["hello world"], trainer=trainers.UnigramTrainer(
