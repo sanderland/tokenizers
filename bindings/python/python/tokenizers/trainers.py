@@ -4,6 +4,8 @@ from pathlib import Path
 
 from .tokenizers import train as _train
 
+_DEFAULT = object()
+
 
 class _Trainer:
     kind = ""
@@ -27,13 +29,17 @@ class _Trainer:
         min_frequency=0,
         initial_alphabet=None,
         alphabet_mode=None,
-        fixed_digits=None,
+        fixed_digits=_DEFAULT,
+        recipe=None,
     ):
         self.vocab_size, self.show_progress = vocab_size, show_progress
         self.special_tokens = list(special_tokens or [])
         self.initial_alphabet = list(initial_alphabet or [])
-        self.alphabet_mode = alphabet_mode or ("utf8" if self.kind == "mingram" else "legacy")
-        self.fixed_digits = fixed_digits
+        self.alphabet_mode = alphabet_mode or ("utf8" if recipe or self.kind == "mingram" else "legacy")
+        self.fixed_digits = (
+            ("single" if recipe == "claude_fixed" else None) if fixed_digits is _DEFAULT else fixed_digits
+        )
+        self.recipe = recipe
         self.seed_init = seed_init or ("bpe" if self.kind == "mingram" else "substrings")
         self.seed_size, self.max_piece_length = seed_size, max_piece_length
         self.n_sub_iterations, self.shrinking_factor = n_sub_iterations, shrinking_factor
@@ -70,6 +76,7 @@ class _Trainer:
             self.initial_alphabet,
             self.alphabet_mode,
             self.fixed_digits,
+            self.recipe,
             tokenizer,
         )
 

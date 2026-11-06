@@ -120,3 +120,21 @@ strings of one to three digits, grouped from the right). BPE rejects fixed-digit
 training. The matching splitter
 is installed in newly created tokenizers. Fixed-digit training on an existing
 pipeline is rejected because its pre-tokenizer may split digit runs first.
+
+Train a Claude-style tokenizer with the combining-mark fix directly in Python:
+
+```python
+from tokenizers import trainers
+
+trainer = trainers.MinGramTrainer(
+    vocab_size=8000, recipe="claude_fixed", fixed_digits="triples"
+)
+tokenizer = trainer.train_from_iterator(["Hello น้ำ नमस्ते 1234567"] * 100)
+tokenizer.save("claude-fixed.json")
+```
+
+`claude_fixed` uses the fixed combining-mark behavior and defaults to single
+fixed digits. Pass `fixed_digits=None` to learn digit pieces instead. Presets
+`claude_v3` and `claude_v47` retain their measured boundary rules and default
+to learned digits. These recipes require a new Unigram or MinGram tokenizer
+and a UTF-8 or legacy alphabet; byte-level alphabets are not supported.

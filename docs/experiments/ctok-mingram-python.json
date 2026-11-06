@@ -1,0 +1,21 @@
+{
+  "source_sha256": "7502a15923c4c9dddad31ecf844bdd1ccdeaf53cccea2a09c71771a8b5faba38",
+  "holdout_sha256": "6d64fc9ee52243ca0e438d5841b82f15f3bfc65df4d51019f8615459fecb7e65",
+  "train_documents": 1741,
+  "holdout_documents": 250,
+  "pretokenizer": "NFC + GPT4O regex",
+  "alphabet_size": 243,
+  "vocab_size": 4096,
+  "max_piece_length_bytes": 256,
+  "seed_factor": 1.1,
+  "python_test_tokens": 79180,
+  "script_tok_test_tokens": 79180,
+  "reference_bpe_test_tokens": 79705,
+  "gain_vs_bpe_pct": 0.6586788783639719,
+  "all_holdout_chunks_round_trip": true,
+  "caveats": [
+    "Reference counts come from the separately executed, hash-matched 243-byte comparison.",
+    "This uses GPT4O regex chunks, not Claude preprocessing.",
+    "Local fixture comparison, not a reproduction of the paper's full evaluation."
+  ]
+}

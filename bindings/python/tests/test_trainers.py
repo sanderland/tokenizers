@@ -166,3 +166,62 @@ def test_impossible_utf8_bytes_cannot_expand_initial_alphabet():
                 cls(
                     vocab_size=300, alphabet_mode="byte_level", initial_alphabet=[symbol], show_progress=False
                 ).train_from_iterator(["hello"])
+
+
+def test_claude_fixed_recipe_train_and_reload(tmp_path):
+    corpus = ["hello น้ำ नमस्ते 1234567 world"] * 10
+    trainer = trainers.MinGramTrainer(
+        vocab_size=1600, recipe="claude_fixed", fixed_digits="triples", show_progress=False
+    )
+    tokenizer = Tokenizer()
+    tokenizer.train_from_iterator(iter(corpus), trainer=trainer)
+    text = "Hello น้ำ नमस्ते 1234567 world “yes” 🦊"
+    assert tokenizer.decode(tokenizer.encode(text).ids) == 'Hello น้ำ नमस्ते 1234567 world "yes" 🦊'
+    pieces = tokenizer.decode_tokens(tokenizer.encode("น้ำ 1234567").ids)
+    assert any("น้ำ" in piece for piece in pieces)
+    assert pieces[-3:] == ["1", "234", "567"]
+    path = tmp_path / "claude.json"
+    tokenizer.save(path)
+    loaded = Tokenizer.from_file(path)
+    assert loaded.decode(loaded.encode(text).ids) == tokenizer.decode(tokenizer.encode(text).ids)
+
+
+def test_claude_preset_options_and_defaults():
+    import pytest
+
+    assert trainers.MinGramTrainer(recipe="claude_fixed").fixed_digits == "single"
+    assert trainers.MinGramTrainer(recipe="claude_fixed", fixed_digits=None).fixed_digits is None
+    assert trainers.MinGramTrainer(recipe="claude_v3").fixed_digits is None
+    assert trainers.MinGramTrainer(recipe="claude_v47").fixed_digits is None
+    for recipe in ("claude_fixed", "claude_v3", "claude_v47"):
+        trainer = trainers.MinGramTrainer(vocab_size=400, recipe=recipe, show_progress=False)
+        tokenizer = trainer.train_from_iterator(["hello น้ำ"] * 5)
+        expected = '"hello"' if recipe != "claude_v47" else "“hello”"
+        assert tokenizer.decode(tokenizer.encode("“hello”").ids) == expected
+        pieces = tokenizer.decode_tokens(tokenizer.encode("น้ำ").ids)
+        assert any("น้ำ" in piece for piece in pieces) == (recipe == "claude_fixed")
+    for trainer in (
+        trainers.BpeTrainer(recipe="claude_fixed"),
+        trainers.MinGramTrainer(recipe="claude_fixed", alphabet_mode="byte_level"),
+    ):
+        with pytest.raises(ValueError, match="requires|require"):
+            trainer.train_from_iterator(["hello"])
+
+
+def test_claude_marked_digit_borders():
+    trainer = trainers.MinGramTrainer(
+        vocab_size=400, recipe="claude_fixed", fixed_digits="single_marked", show_progress=False
+    )
+    tokenizer = trainer.train_from_iterator(["hello 123 world"] * 5)
+    pieces = tokenizer.decode_tokens(tokenizer.encode("hello 123 world").ids)
+    assert "\ufdd01" in pieces and "3\ufdd1" in pieces
+    assert tokenizer.decode(tokenizer.encode("hello 123 world").ids) == "hello 123 world"
+
+
+def test_claude_unigram_unseen_unicode_and_file_training(tmp_path):
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text("hello น้ำ नमस्ते\n" * 5, encoding="utf-8")
+    trainer = trainers.UnigramTrainer(vocab_size=500, recipe="claude_fixed", show_progress=False)
+    tokenizer = trainer.train([corpus])
+    text = "Hello น้ำ 🦊"
+    assert tokenizer.decode(tokenizer.encode(text).ids) == text

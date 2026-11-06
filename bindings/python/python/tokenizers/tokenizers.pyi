@@ -450,5 +450,6 @@ def train(
     initial_alphabet: Sequence[str],
     alphabet_mode: str,
     fixed_digits: str | None,
+    recipe: str | None,
     template: Tokenizer | None,
 ) -> Tokenizer: ...

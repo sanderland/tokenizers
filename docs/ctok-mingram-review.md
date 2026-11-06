@@ -78,6 +78,60 @@ Raw results and executable comparisons:
 [investigation script](../scripts/investigate_mingram_gap.py), and
 [byte comparison script](../scripts/compare_mingram_byte_alphabet.py).
 
+## Train the corrected Claude recipe in Python
+
+Use this checkout's Python package:
+
+```python
+from tokenizers import trainers
+
+trainer = trainers.MinGramTrainer(
+    vocab_size=8000, recipe="claude_fixed", fixed_digits="triples",
+)
+tokenizer = trainer.train(["corpus.txt"])
+tokenizer.save("claude-fixed.json")
+```
+
+The recipe assembles `ClaudeNormalizer`, corrected `MarkBoundaries`,
+`MarkSplit`, the optional fixed-digit splitter, and `Unmark`. Training and
+inference use the same pipeline. It defaults to UTF-8 character/fallback
+mode and single fixed digits. `fixed_digits=None` preserves learned digits;
+`single_marked` installs the 40 boundary forms, and `triples` uses 1,110
+right-to-left chunks without digit markers. The same recipe works with
+`UnigramTrainer`. A fresh `Tokenizer().train_from_iterator(..., trainer=...)`
+works as well. Cleanup is intentionally lossy: decoded text has NFC and the
+recipe's quote/control/space normalization.
+
+`recipe="claude_v3"` and `"claude_v47"` preserve the measured marking presets
+and default to learned digits. The recipe constructor requires a fresh tokenizer.
+It rejects byte-level alphabets: converting the markers to byte symbols before
+`MarkSplit` would erase its cuts. Byte-alphabet training remains available
+separately, without a Claude recipe.
+
+The executable [file-training example](../scripts/train_claude_fixed.py) supports
+MinGram and Unigram and each digit policy:
+
+```sh
+python scripts/train_claude_fixed.py corpus.txt --output claude-fixed.json
+python scripts/train_claude_fixed.py corpus.txt --output triples.json --digits triples
+```
+
+The [Python MinGram comparison](../scripts/compare_python_mingram.py) now trains
+through the actual Python API and evaluates after save/load. It reproduces
+**79,180** held-out tokens and all 243 required byte symbols, matching the
+separately run `script_tok` experiment on the same hashed Rosetta fixtures.
+Every held-out pretoken round-trips. Its input is NFC + GPT4O regex chunks,
+not the Claude recipe, and its piece limit is explicitly 256 bytes.
+[Recorded result](experiments/ctok-mingram-python.json).
+
+```sh
+python scripts/compare_python_mingram.py
+```
+
+This verifies the local UTF-8 MinGram implementation and Python entry point.
+It does not reproduce the paper's larger corpus, morphology or language-model
+evaluations, or attribute those research results to the Claude recipe.
+
 ## Alphabets and Python training
 
 Both `UnigramTrainer` and `MinGramTrainer` accept the same `alphabet_mode`:
@@ -338,11 +392,15 @@ or downstream language-model results.
 
 ## Verification after the second pass
 
-360 Rust unit tests pass across encoder, serializer and trainers; two fixture-based
-tests are ignored. Thirteen Python trainer tests pass, covering both Unigram
+362 Rust unit tests pass across encoder, serializer and trainers; two fixture-based
+tests are ignored. Seventeen Python trainer tests pass, covering both Unigram
 alphabets, fixed inventories, serialization, existing preprocessing, byte-level
 BPE, and atomic failure when retraining would invalidate a postprocessor.
-The Claude example round-trips all digit policies through save/load. A minimal
+The Claude examples round-trip all digit policies through save/load. Plain
+Unigram MaxScore fallback now also handles unseen characters without an UNK
+when its byte inventory covers them, including sampled inference; incomplete
+fallback inventories still fail. The Python file-training CLI runs successfully
+for both trainers. A minimal
 Unigram-only build also passes without BPE enabled. The broader Python suite
 requires tokenizer fixture files absent from this checkout and was not run.
 

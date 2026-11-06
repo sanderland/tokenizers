@@ -495,3 +495,44 @@ fn min_tokens_prices_byte_fallback_before_selecting_a_path() {
         ["a", "b", "c😀d", "e", "f"]
     );
 }
+
+#[test]
+fn max_score_byte_fallback_without_unk_covers_unseen_characters() {
+    for (optimized, alpha, nbest) in [
+        (true, None, None),
+        (false, None, None),
+        (false, Some(0.5), None),
+        (false, Some(0.5), Some(2)),
+    ] {
+        let mut model =
+            Unigram::from(byte_vocab(true).into_iter().skip(1).collect(), None, true).unwrap();
+        model.set_optimized(optimized);
+        model.alpha = alpha;
+        model.nbest_size = nbest;
+        let emitted: Vec<_> = model
+            .tokenize("🎉é")
+            .unwrap()
+            .into_iter()
+            .map(|t| t.value)
+            .collect();
+        assert_eq!(
+            emitted,
+            ["<0xF09F>", "<0x8E>", "<0x89>", "<0xC3>", "<0xA9>"]
+        );
+        let mut scratch = Model::init_scratch(&model);
+        assert_eq!(pipeline_ids(&model, "🎉é", &mut scratch).len(), 5);
+    }
+}
+
+#[test]
+fn max_score_without_unk_only_errors_when_the_selected_path_needs_it() {
+    for optimized in [true, false] {
+        let mut model = Unigram::from(vec![("ab".to_owned(), -1.)], None, false).unwrap();
+        model.set_optimized(optimized);
+        assert_eq!(model.encode("ab").unwrap(), ["ab"]);
+        assert!(model.tokenize("🦊").is_err());
+        let mut incomplete = Unigram::from(vec![("<0xF09F>".to_owned(), -1.)], None, true).unwrap();
+        incomplete.set_optimized(optimized);
+        assert!(incomplete.tokenize("🦊").is_err());
+    }
+}

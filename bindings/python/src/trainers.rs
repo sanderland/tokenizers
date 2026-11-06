@@ -6,19 +6,21 @@ use std::collections::BTreeMap;
 use tk::Trainer;
 use tk::decoders::{
     DecoderRuntime, byte_fallback::ByteFallback, byte_level::ByteLevelDecoder, fuse::Fuse,
+    unmark::Unmark,
 };
 use tk::models::bpe::{BpeConfig, PipelineBPE};
 use tk::models::unigram::Unigram;
-use tk::normalizers::ByteLevel;
+use tk::normalizers::{ByteLevel, ClaudeNormalizer, MarkBoundaries};
 use tk::pipeline::{Normalizer as _, PreTokenizer as _};
 use tk::pipeline::{PipelineModel, PipelinePostProcessor, PipelinePreTokenizer, PipelineTokenizer};
+use tk::pre_tokenizers::{mark_split::MarkSplit, sequence::PipelineSequence};
 use tk::trainers::{
     AlphabetMode, BpeTrainer, MinGramTrainer, PruneCriterion, SeedInit, UnigramTrainer,
 };
 use tk::vocab::bucket_added_vocabulary::{AddedToken, AddedVocabulary};
 
 #[pyfunction]
-#[pyo3(signature = (kind, sequences, vocab_size, show_progress, special_tokens, seed_init, seed_size, max_piece_length, n_sub_iterations, shrinking_factor, seed_factor, prune_criterion, pruning_shrinking_factor, skip_substring_in_batch, unk_token, min_frequency, initial_alphabet, alphabet_mode, fixed_digits, template))]
+#[pyo3(signature = (kind, sequences, vocab_size, show_progress, special_tokens, seed_init, seed_size, max_piece_length, n_sub_iterations, shrinking_factor, seed_factor, prune_criterion, pruning_shrinking_factor, skip_substring_in_batch, unk_token, min_frequency, initial_alphabet, alphabet_mode, fixed_digits, recipe, template))]
 #[allow(clippy::too_many_arguments)]
 pub fn train(
     py: Python<'_>,
@@ -41,6 +43,7 @@ pub fn train(
     initial_alphabet: Vec<char>,
     alphabet_mode: &str,
     fixed_digits: Option<&str>,
+    recipe: Option<&str>,
     template: Option<PyRef<'_, Tokenizer>>,
 ) -> PyResult<Tokenizer> {
     if sequences.iter().all(|s| s.is_empty()) {
@@ -80,6 +83,16 @@ pub fn train(
         ));
     }
     let byte_level = alphabet_mode == "byte_level";
+    if let Some(name) = recipe {
+        if !matches!(name, "claude_fixed" | "claude_v3" | "claude_v47") {
+            return Err(PyValueError::new_err("unknown recipe"));
+        }
+        if kind == "bpe" || byte_level {
+            return Err(PyValueError::new_err(
+                "Claude recipes require a Unigram or MinGram trainer with utf8 or legacy alphabet",
+            ));
+        }
+    }
     let seed = match seed_init {
         "substrings" => SeedInit::Substrings,
         "bpe" => SeedInit::Bpe,
@@ -107,10 +120,13 @@ pub fn train(
         .into_iter()
         .map(|s| AddedToken::from(s, true))
         .collect();
-    let template = template
+    let mut template = template
         .map(|t| t.training_template())
         .transpose()?
         .flatten();
+    if template.is_some() && recipe.is_some() {
+        return Err(PyValueError::new_err("recipe requires a new tokenizer"));
+    }
     if template.is_some() && digits.is_some() {
         return Err(PyValueError::new_err(
             "fixed_digits requires a new tokenizer; existing preprocessing cannot safely be combined",
@@ -130,6 +146,37 @@ pub fn train(
     {
         return Err(PyValueError::new_err(
             "byte_level training requires an existing ByteLevel normalizer",
+        ));
+    }
+    if let Some(name) = recipe {
+        let mut marking = match name {
+            "claude_fixed" => MarkBoundaries::default(),
+            "claude_v3" => MarkBoundaries::v3(),
+            "claude_v47" => MarkBoundaries::v47(),
+            _ => unreachable!(),
+        };
+        if let Some(policy) = digits {
+            marking = marking.with_fixed_digits(policy).map_err(err)?;
+        }
+        let mut splitters = vec![PipelinePreTokenizer::MarkSplit(MarkSplit)];
+        if let Some(policy) = digits {
+            splitters.push(PipelinePreTokenizer::FixedDigits(policy));
+        }
+        template = Some(PipelineTokenizer::from_parts(
+            AddedVocabulary::new(),
+            vec![
+                tk::pipeline::PipelineNormalizer::ClaudeNormalizer(ClaudeNormalizer::new(
+                    name != "claude_v47",
+                )),
+                tk::pipeline::PipelineNormalizer::MarkBoundaries(marking),
+            ],
+            PipelinePreTokenizer::Sequence(PipelineSequence::new(splitters)),
+            PipelineModel::Unigram(Unigram::default()),
+            PipelinePostProcessor::default(),
+            Some(DecoderRuntime::Unmark(Unmark::new())),
+            BTreeMap::new(),
+            None,
+            None,
         ));
     }
     let preprocessing = template.clone();

@@ -411,7 +411,7 @@ impl Unigram {
                 {
                     target_node.best_path_score = candidate_best_path_score;
                     target_node.starts_at = Some(starts_at);
-                    target_node.id = self.unk_id.ok_or(UnigramError::MissingUnkId)?;
+                    target_node.id = self.unk_id.unwrap_or(FALLBACK_ID);
                 }
             }
             starts_at += mblen
@@ -422,6 +422,14 @@ impl Unigram {
         while ends_at > 0 {
             let node = &best_path_ends_at[ends_at];
             let starts_at = node.starts_at.unwrap();
+            if node.id == FALLBACK_ID
+                && !(self.byte_fallback
+                    && self
+                        .byte_fallback_ids(&sentence[starts_at..ends_at])
+                        .is_some())
+            {
+                return Err(Box::new(UnigramError::MissingUnkId));
+            }
             if self.fuse_unk && Some(node.id) == self.unk_id {
                 token.push(sentence[starts_at..ends_at].to_string());
             } else {
@@ -450,12 +458,22 @@ impl Unigram {
             (_, Some(alpha)) => lattice.sample(alpha),
             _ => lattice.viterbi(),
         };
+        for node in &path {
+            if node.borrow().id == FALLBACK_ID
+                && !(self.byte_fallback
+                    && self
+                        .byte_fallback_ids(&lattice.piece(&node.borrow()))
+                        .is_some())
+            {
+                return Err(Box::new(UnigramError::MissingUnkId));
+            }
+        }
         if self.fuse_unk {
             let mut results = vec![];
             let mut token = String::new();
             for node in path.iter() {
                 let item = lattice.piece(&node.borrow());
-                if node.borrow().id == self.unk_id.ok_or(UnigramError::MissingUnkId)? {
+                if Some(node.borrow().id) == self.unk_id {
                     token.push_str(&item);
                 } else {
                     if !token.is_empty() {
