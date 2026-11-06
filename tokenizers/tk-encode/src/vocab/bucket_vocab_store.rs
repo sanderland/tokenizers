@@ -215,6 +215,9 @@ impl Default for BucketVocabStore {
 impl BucketVocabStore {
     pub fn build(tokens: Vec<(Vec<u8>, u32)>) -> Result<Self> {
         let n = tokens.len();
+        if n == 0 {
+            return Ok(Self::new());
+        }
 
         let keys: Vec<u64> = tokens
             .iter()
@@ -460,6 +463,15 @@ impl BucketVocabStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_vocabulary_can_be_built_and_queried() {
+        let vocab = BucketVocabStore::build(vec![]).unwrap();
+        assert_eq!(vocab.len(), 0);
+        assert_eq!(vocab.get_bytes(b"anything"), None);
+        assert_eq!(vocab.id_to_token(0), None);
+        assert!(vocab.content().is_empty());
+    }
 
     // The key is a little-endian pack of the word with its length on top -- not whatever a `u64`
     // load of those bytes happens to give. Built with shifts here so the expected value is the

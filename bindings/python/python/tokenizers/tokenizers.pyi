@@ -141,7 +141,7 @@ class Tokenizer:
     """
     A tokenizer. Encodes text into token ids, and decodes token ids back into text.
     """
-    def __new__(cls, /) -> Tokenizer:
+    def __new__(cls, /, model: Any | None = None) -> Tokenizer:
         """
         Create an empty tokenizer for training.
         """
@@ -185,6 +185,10 @@ class Tokenizer:
         Returns:
             list[str]
         """
+    @property
+    def decoder(self, /) -> Any: ...
+    @decoder.setter
+    def decoder(self, /, value: Any) -> None: ...
     def encode(
         self,
         /,
@@ -318,6 +322,14 @@ class Tokenizer:
         ```
         """
     @property
+    def model(self, /) -> Any: ...
+    @model.setter
+    def model(self, /, value: Any) -> None: ...
+    @property
+    def normalizer(self, /) -> Any: ...
+    @normalizer.setter
+    def normalizer(self, /, value: Any) -> None: ...
+    @property
     def padding(self, /) -> Padding | None:
         """
         The padding applied to every encode, or `None`.
@@ -325,6 +337,10 @@ class Tokenizer:
         """
     @padding.setter
     def padding(self, /, padding: Padding | None) -> None: ...
+    @property
+    def pre_tokenizer(self, /) -> Any: ...
+    @pre_tokenizer.setter
+    def pre_tokenizer(self, /, value: Any) -> None: ...
     def save(self, /, path: str | PathLike[str]) -> None:
         """
         Save this tokenizer as JSON.
@@ -450,6 +466,5 @@ def train(
     initial_alphabet: Sequence[str],
     alphabet_mode: str,
     fixed_digits: str | None,
-    recipe: str | None,
     template: Tokenizer | None,
 ) -> Tokenizer: ...

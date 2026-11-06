@@ -51,6 +51,53 @@ impl Tokenizer {
         }
     }
 
+    fn component(&self, py: Python<'_>, kind: &str) -> PyResult<Py<PyAny>> {
+        let json = tk::to_json(&self.pipeline()?).map_err(err)?;
+        let fields: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+            serde_json::from_str(&json).map_err(err)?;
+        let value = fields
+            .get(kind)
+            .ok_or_else(|| err("missing component in tokenizer JSON"))?;
+        Ok(PyModule::import(py, "tokenizers._components")?
+            .getattr("from_json")?
+            .call1((kind, value.get()))?
+            .unbind())
+    }
+
+    fn replace_component(
+        &self,
+        py: Python<'_>,
+        kind: &str,
+        component: Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let new_json: String = PyModule::import(py, "tokenizers._components")?
+            .getattr("to_json")?
+            .call1((kind, component))?
+            .extract()?;
+        let raw = serde_json::value::RawValue::from_string(new_json).map_err(err)?;
+        let original = self.pipeline()?;
+        let json = tk::to_json(&original).map_err(err)?;
+        let mut fields: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
+            serde_json::from_str(&json).map_err(err)?;
+        fields.insert(kind.to_string(), raw);
+        let json = serde_json::to_string(&fields).map_err(err)?;
+        let mut pipeline: Pipeline = tk::from_json(&json).map_err(err)?;
+        if kind != "model" {
+            if let tk::pipeline::PipelineModel::Unigram(model) = original.get_model() {
+                let added = pipeline.get_added_vocabulary().clone();
+                pipeline = pipeline
+                    .with_model_and_added_vocabulary(
+                        tk::pipeline::PipelineModel::Unigram(model.clone()),
+                        added,
+                    )
+                    .map_err(err)?;
+            }
+        }
+        *self.pipeline.lock().map_err(poison_err)? = pipeline;
+        *self.fresh.lock().map_err(poison_err)? = false;
+        Ok(())
+    }
+
     fn make_options(
         &self,
         add_special_tokens: bool,
@@ -96,7 +143,8 @@ type UnpickleArguments = (String, Option<Padding>, Option<Truncation>);
 impl Tokenizer {
     /// Create an empty tokenizer for training.
     #[new]
-    fn new() -> Self {
+    #[pyo3(signature = (model=None))]
+    fn new(py: Python<'_>, model: Option<Bound<'_, PyAny>>) -> PyResult<Self> {
         use std::collections::BTreeMap;
         use tk::pipeline::{PipelineModel, PipelinePostProcessor, PipelinePreTokenizer};
         use tk::vocab::bucket_added_vocabulary::AddedVocabulary;
@@ -112,7 +160,43 @@ impl Tokenizer {
             None,
         ));
         *result.fresh.lock().unwrap() = true;
-        result
+        if let Some(model) = model {
+            result.replace_component(py, "model", model)?;
+        }
+        Ok(result)
+    }
+
+    #[getter]
+    fn model(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.component(py, "model")
+    }
+    #[setter]
+    fn set_model(&self, py: Python<'_>, value: Bound<'_, PyAny>) -> PyResult<()> {
+        self.replace_component(py, "model", value)
+    }
+    #[getter]
+    fn normalizer(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.component(py, "normalizer")
+    }
+    #[setter]
+    fn set_normalizer(&self, py: Python<'_>, value: Bound<'_, PyAny>) -> PyResult<()> {
+        self.replace_component(py, "normalizer", value)
+    }
+    #[getter]
+    fn pre_tokenizer(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.component(py, "pre_tokenizer")
+    }
+    #[setter]
+    fn set_pre_tokenizer(&self, py: Python<'_>, value: Bound<'_, PyAny>) -> PyResult<()> {
+        self.replace_component(py, "pre_tokenizer", value)
+    }
+    #[getter]
+    fn decoder(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.component(py, "decoder")
+    }
+    #[setter]
+    fn set_decoder(&self, py: Python<'_>, value: Bound<'_, PyAny>) -> PyResult<()> {
+        self.replace_component(py, "decoder", value)
     }
 
     /// Train this tokenizer in place on an iterable of strings.

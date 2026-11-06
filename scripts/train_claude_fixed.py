@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Train the fork's Claude-inspired recipe from UTF-8 text files."""
+"""Train a Claude-inspired pipeline from UTF-8 files with an explicit digit policy."""
 
 import argparse
 from pathlib import Path
 
-from tokenizers import Tokenizer, trainers
+from tokenizers import Tokenizer, create_claude_tokenizer, trainers
 
 
 def main():
@@ -18,7 +18,7 @@ def main():
     parser.add_argument(
         "--digits",
         choices=["single", "single_marked", "triples", "learned"],
-        default="single",
+        required=True,
     )
     parser.add_argument("--max-piece-length", type=int, default=16)
     args = parser.parse_args()
@@ -28,13 +28,13 @@ def main():
         else trainers.UnigramTrainer
     )
     trainer = cls(
-        recipe="claude_fixed",
         alphabet_mode="utf8",
-        fixed_digits=None if args.digits == "learned" else args.digits,
         vocab_size=args.vocab_size,
         max_piece_length=args.max_piece_length,
     )
-    tokenizer = Tokenizer()
+    tokenizer = create_claude_tokenizer(
+        digits=None if args.digits == "learned" else args.digits
+    )
     tokenizer.train(args.files, trainer=trainer)
     tokenizer.save(args.output)
     loaded = Tokenizer.from_file(args.output)

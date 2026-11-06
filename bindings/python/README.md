@@ -118,23 +118,66 @@ To reserve a fixed digit inventory, pass `fixed_digits="single"` (10 digits),
 `"single_marked"` (40 boundary forms), or `"triples"` (1,110 decimal
 strings of one to three digits, grouped from the right). BPE rejects fixed-digit
 training. The matching splitter
-is installed in newly created tokenizers. Fixed-digit training on an existing
-pipeline is rejected because its pre-tokenizer may split digit runs first.
+is installed in newly created tokenizers. Configured pipelines must already contain the matching fixed-digit splitter
+in a safe order. The trainer infers its inventory and verifies explicit overrides.
 
-Train a Claude-style tokenizer with the combining-mark fix directly in Python:
+Configure the tokenizer's pipeline separately from the trainer:
 
 ```python
-from tokenizers import trainers
+from tokenizers import Tokenizer, decoders, models, normalizers, pre_tokenizers, trainers
 
-trainer = trainers.MinGramTrainer(
-    vocab_size=8000, recipe="claude_fixed", fixed_digits="triples"
+tokenizer = Tokenizer(models.Unigram(byte_fallback=True))
+tokenizer.normalizer = normalizers.Sequence([
+    normalizers.ClaudeNormalizer(fold_quotes=True),
+    normalizers.MarkBoundaries(marks_part_of_words=True, fixed_digits="triples"),
+])
+tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
+    pre_tokenizers.MarkSplit(),
+    pre_tokenizers.FixedDigits.triples(),
+])
+tokenizer.decoder = decoders.Unmark()
+
+tokenizer.train_from_iterator(
+    ["Hello น้ำ नमस्ते 1234567"] * 100,
+    trainer=trainers.MinGramTrainer(vocab_size=8000, alphabet_mode="utf8"),
 )
-tokenizer = trainer.train_from_iterator(["Hello น้ำ नमस्ते 1234567"] * 100)
 tokenizer.save("claude-fixed.json")
 ```
 
-`claude_fixed` uses the fixed combining-mark behavior and defaults to single
-fixed digits. Pass `fixed_digits=None` to learn digit pieces instead. Presets
-`claude_v3` and `claude_v47` retain their measured boundary rules and default
-to learned digits. These recipes require a new Unigram or MinGram tokenizer
-and a UTF-8 or legacy alphabet; byte-level alphabets are not supported.
+The trainer reserves the inventory specified by `FixedDigits`, so the policy
+does not need to be repeated in the trainer. Conflicting trainer options fail before training. A configured `FixedDigits`
+splitter must be last, with only `MarkSplit` allowed before it.
+Training preserves the configured normalizer, splitter and decoder.
+
+An optional factory constructs those same public components:
+
+```python
+from tokenizers import create_claude_tokenizer, trainers
+
+tokenizer = create_claude_tokenizer(digits="triples", preset="fixed")
+tokenizer.train(["corpus.txt"], trainer=trainers.MinGramTrainer(
+    vocab_size=8000, alphabet_mode="utf8",
+))
+```
+
+The factory requires a digit choice: `"single"`, `"single_marked"`, `"triples"`,
+or `None` for learned digits. Presets `"fixed"`, `"v3"`, and `"v47"` select the
+corrected or measured Claude marking rules. The trainer has no `recipe` option.
+Use `UnigramTrainer(alphabet_mode="utf8")` for plain Unigram with the same
+pipeline. The Claude marked stream currently uses UTF-8 character/fallback
+mode; byte-alphabet pipelines remain separate.
+
+Components are immutable configuration snapshots. Replace a property with a
+new component to change a tokenizer. Existing tokenizer JSON files still load.
+The exposed constructors cover BPE/Unigram, common normalizers and splitters,
+and the decoders used here; they do not implement every historical HF method.
+In this fork, byte mapping is a `normalizers.ByteLevel()` component:
+
+```python
+tokenizer = Tokenizer(models.Unigram())
+tokenizer.normalizer = normalizers.ByteLevel()
+tokenizer.decoder = decoders.ByteLevel()
+tokenizer.train_from_iterator(["hello world"], trainer=trainers.UnigramTrainer(
+    vocab_size=8000, alphabet_mode="byte_level",
+))
+```

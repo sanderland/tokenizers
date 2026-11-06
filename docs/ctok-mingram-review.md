@@ -78,50 +78,57 @@ Raw results and executable comparisons:
 [investigation script](../scripts/investigate_mingram_gap.py), and
 [byte comparison script](../scripts/compare_mingram_byte_alphabet.py).
 
-## Train the corrected Claude recipe in Python
+## Configure the corrected Claude pipeline in Python
 
-Use this checkout's Python package:
+Pipeline components are configured on `Tokenizer`, separately from its trainer:
 
 ```python
-from tokenizers import trainers
+from tokenizers import Tokenizer, decoders, models, normalizers, pre_tokenizers, trainers
 
-trainer = trainers.MinGramTrainer(
-    vocab_size=8000, recipe="claude_fixed", fixed_digits="triples",
-)
-tokenizer = trainer.train(["corpus.txt"])
+tokenizer = Tokenizer(models.Unigram(byte_fallback=True))
+tokenizer.normalizer = normalizers.Sequence([
+    normalizers.ClaudeNormalizer(fold_quotes=True),
+    normalizers.MarkBoundaries(marks_part_of_words=True, fixed_digits="triples"),
+])
+tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
+    pre_tokenizers.MarkSplit(), pre_tokenizers.FixedDigits.triples(),
+])
+tokenizer.decoder = decoders.Unmark()
+tokenizer.train(["corpus.txt"], trainer=trainers.MinGramTrainer(
+    vocab_size=8000, alphabet_mode="utf8",
+))
 tokenizer.save("claude-fixed.json")
 ```
 
-The recipe assembles `ClaudeNormalizer`, corrected `MarkBoundaries`,
-`MarkSplit`, the optional fixed-digit splitter, and `Unmark`. Training and
-inference use the same pipeline. It defaults to UTF-8 character/fallback
-mode and single fixed digits. `fixed_digits=None` preserves learned digits;
-`single_marked` installs the 40 boundary forms, and `triples` uses 1,110
-right-to-left chunks without digit markers. The same recipe works with
-`UnigramTrainer`. A fresh `Tokenizer().train_from_iterator(..., trainer=...)`
-works as well. Cleanup is intentionally lossy: decoded text has NFC and the
-recipe's quote/control/space normalization.
+The optional `create_claude_tokenizer(digits="triples", preset="fixed")`
+factory assembles those same public components. It requires an explicit digit
+choice: `single`, `single_marked`, `triples`, or `None` for learned digits.
+Presets `fixed`, `v3`, and `v47` select the corrected or measured marking rules.
+There is no trainer `recipe` argument. The configured splitter determines the
+fixed inventory, including when retraining a loaded tokenizer; conflicting
+trainer settings and unsafe numeric split order are errors.
 
-`recipe="claude_v3"` and `"claude_v47"` preserve the measured marking presets
-and default to learned digits. The recipe constructor requires a fresh tokenizer.
-It rejects byte-level alphabets: converting the markers to byte symbols before
-`MarkSplit` would erase its cuts. Byte-alphabet training remains available
-separately, without a Claude recipe.
+The same pipeline works with `UnigramTrainer(alphabet_mode="utf8")`.
+Cleanup is intentionally lossy: decoding recovers the recipe's NFC and
+quote/control/space normalization. Components are immutable snapshots; replace
+the tokenizer property to change one. The marked Claude stream currently uses
+UTF-8 character/fallback mode. Byte-alphabet pipelines remain separate because
+mapping markers to byte symbols before `MarkSplit` would erase its cuts.
 
-The executable [file-training example](../scripts/train_claude_fixed.py) supports
-MinGram and Unigram and each digit policy:
+The executable [file-training example](../scripts/train_claude_fixed.py) uses the
+factory and supports MinGram, Unigram and each explicit digit policy:
 
 ```sh
-python scripts/train_claude_fixed.py corpus.txt --output claude-fixed.json
+python scripts/train_claude_fixed.py corpus.txt --output claude-fixed.json --digits single
 python scripts/train_claude_fixed.py corpus.txt --output triples.json --digits triples
 ```
 
-The [Python MinGram comparison](../scripts/compare_python_mingram.py) now trains
+The [Python MinGram comparison](../scripts/compare_python_mingram.py) trains
 through the actual Python API and evaluates after save/load. It reproduces
 **79,180** held-out tokens and all 243 required byte symbols, matching the
 separately run `script_tok` experiment on the same hashed Rosetta fixtures.
 Every held-out pretoken round-trips. Its input is NFC + GPT4O regex chunks,
-not the Claude recipe, and its piece limit is explicitly 256 bytes.
+not the Claude pipeline, and its piece limit is explicitly 256 bytes.
 [Recorded result](experiments/ctok-mingram-python.json).
 
 ```sh
@@ -130,7 +137,7 @@ python scripts/compare_python_mingram.py
 
 This verifies the local UTF-8 MinGram implementation and Python entry point.
 It does not reproduce the paper's larger corpus, morphology or language-model
-evaluations, or attribute those research results to the Claude recipe.
+evaluations, or attribute those research results to the Claude pipeline.
 
 ## Alphabets and Python training
 
@@ -172,7 +179,7 @@ Retraining an existing tokenizer preserves preprocessing and rebinds template
 and padding token IDs by spelling; failure leaves the original tokenizer intact.
 The current iterator implementation collects text in memory. These bindings
 restore the training workflow but do not recreate every historical Python model
-constructor or trainer class. See [Python usage](../bindings/python/README.md).
+component or method. See [Python usage](../bindings/python/README.md).
 
 ## What the Claude-inspired path does
 
@@ -222,9 +229,9 @@ all-numeric corpus. Existing special tokens cannot collide with this inventory.
 
 Python: pass `fixed_digits="single"`, `"single_marked"`, or `"triples"`
 to a new Unigram/MinGram tokenizer's trainer. BPE fixed digits are explicitly
-unsupported. Existing Python pipelines reject fixed-digit retraining because
-an earlier regex splitter might already have broken numeric runs in the wrong
-direction; marked digits with byte-level normalization also fail explicitly.
+unsupported. Configured Python pipelines must end with the matching fixed-digit splitter,
+with only `MarkSplit` allowed before it. The inventory is inferred from it. Marked digits with byte-level
+normalization also fail explicitly.
 These restrictions avoid silently producing a different numeric policy.
 
 For the Rust Claude path, use the same policy in `MarkBoundaries::with_fixed_digits`,
@@ -392,8 +399,8 @@ or downstream language-model results.
 
 ## Verification after the second pass
 
-362 Rust unit tests pass across encoder, serializer and trainers; two fixture-based
-tests are ignored. Seventeen Python trainer tests pass, covering both Unigram
+363 Rust unit tests pass across encoder, serializer and trainers; two fixture-based
+tests are ignored. Twenty-five Python component and trainer tests pass, covering both Unigram
 alphabets, fixed inventories, serialization, existing preprocessing, byte-level
 BPE, and atomic failure when retraining would invalidate a postprocessor.
 The Claude examples round-trip all digit policies through save/load. Plain
