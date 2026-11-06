@@ -481,7 +481,13 @@ impl Unigram {
     fn encode_min_tokens(&self, sentence: &str) -> Result<Vec<String>> {
         let mut lattice = Lattice::from(sentence, self.bos_id, self.eos_id);
         self.populate_nodes(&mut lattice);
-        let path = lattice.viterbi_min_tokens();
+        let path = lattice.viterbi_min_tokens_with_cost(|id, piece| {
+            if self.byte_fallback && (id == FALLBACK_ID || Some(id) == self.unk_id) {
+                self.byte_fallback_ids(piece).map_or(1, |ids| ids.len())
+            } else {
+                1
+            }
+        });
         if path.is_empty() && !sentence.is_empty() {
             // Unreachable now that every char has a fallback node, but an
             // empty path for non-empty input must stay an error, never

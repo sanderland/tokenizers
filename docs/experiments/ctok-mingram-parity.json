@@ -1,0 +1,223 @@
+{
+  "seed": 20261106,
+  "python_unicode": "15.1.0",
+  "normalization_cases": 20820,
+  "ctok_comparisons": 13880,
+  "ctok_differences": [],
+  "roundtrip_failures": [],
+  "digit_examples": [
+    {
+      "text": "1234567890",
+      "cleaned": "1234567890",
+      "decoded": "1234567890",
+      "marked": "1234567890",
+      "spans": [
+        "1234567890"
+      ]
+    },
+    {
+      "text": "12 34",
+      "cleaned": "12 34",
+      "decoded": "12 34",
+      "marked": "12 34",
+      "spans": [
+        "12",
+        " ",
+        "34"
+      ]
+    },
+    {
+      "text": "a123b",
+      "cleaned": "a123b",
+      "decoded": "a123b",
+      "marked": "﷐a﷑123﷐b﷑",
+      "spans": [
+        "﷐a﷑",
+        "123",
+        "﷐b﷑"
+      ]
+    },
+    {
+      "text": "123.456",
+      "cleaned": "123.456",
+      "decoded": "123.456",
+      "marked": "123.456",
+      "spans": [
+        "123.456"
+      ]
+    },
+    {
+      "text": "١٢٣ ٤٥٦",
+      "cleaned": "١٢٣ ٤٥٦",
+      "decoded": "١٢٣ ٤٥٦",
+      "marked": "١٢٣﷑﷐٤٥٦",
+      "spans": [
+        "١٢٣﷑",
+        "﷐٤٥٦"
+      ]
+    },
+    {
+      "text": "१२३ ४५६",
+      "cleaned": "१२३ ४५६",
+      "decoded": "१२३ ४५६",
+      "marked": "१२३﷑﷐४५६",
+      "spans": [
+        "१२३﷑",
+        "﷐४५६"
+      ]
+    },
+    {
+      "text": "１２３ ４５６",
+      "cleaned": "１２３ ４５６",
+      "decoded": "１２３ ４５６",
+      "marked": "１２３﷑﷐４５６",
+      "spans": [
+        "１２３﷑",
+        "﷐４５６"
+      ]
+    },
+    {
+      "text": "²³ ⁴⁵",
+      "cleaned": "²³ ⁴⁵",
+      "decoded": "²³ ⁴⁵",
+      "marked": "²³﷑﷐⁴⁵",
+      "spans": [
+        "²³﷑",
+        "﷐⁴⁵"
+      ]
+    },
+    {
+      "text": "123abc456",
+      "cleaned": "123abc456",
+      "decoded": "123abc456",
+      "marked": "123﷐abc﷑456",
+      "spans": [
+        "123",
+        "﷐abc﷑",
+        "456"
+      ]
+    },
+    {
+      "text": "it's don't I'M",
+      "cleaned": "it's don't I'M",
+      "decoded": "it's don't I'M",
+      "marked": "﷐it﷑'s﷑﷐don﷑'t﷑﷓﷐i﷑'﷓﷐m﷑",
+      "spans": [
+        "﷐it﷑",
+        "'s﷑",
+        "﷐don﷑",
+        "'t﷑",
+        "﷓﷐i﷑",
+        "'﷓﷐m﷑"
+      ]
+    }
+  ],
+  "fixed_utf8_comparisons": 500,
+  "fixed_utf8_count_differences": [],
+  "hard_em": {
+    "python_counts": [
+      {
+        "3": 5.0,
+        "0": 5.0,
+        "5": 4.0,
+        "4": 4.0
+      },
+      {
+        "3": 5.0,
+        "0": 5.0,
+        "5": 4.0,
+        "4": 4.0
+      }
+    ],
+    "python_final_corpus_tokens": 18,
+    "rust_final_corpus_tokens": 18,
+    "rust_scores": {
+      "pieces": [
+        [
+          "a",
+          -1.33500106673234
+        ],
+        [
+          "b",
+          -3.6375861597263857
+        ],
+        [
+          "c",
+          -3.6375861597263857
+        ],
+        [
+          "ab",
+          -1.33500106673234
+        ],
+        [
+          "bc",
+          -1.5581446180465497
+        ],
+        [
+          "abc",
+          -1.5581446180465497
+        ]
+      ]
+    }
+  },
+  "configuration_probes": [
+    {
+      "config": {
+        "label": "exact_floor_budget",
+        "vocab_size": 249
+      },
+      "size": 249
+    },
+    {
+      "config": {
+        "label": "one_spare_slot",
+        "vocab_size": 250
+      },
+      "size": 250
+    },
+    {
+      "config": {
+        "label": "zero_iterations",
+        "iterations": 0
+      },
+      "error": "MinGram requires at least one EM sub-iteration"
+    },
+    {
+      "config": {
+        "label": "zero_max_length",
+        "max_length": 0
+      },
+      "error": "MinGram requires positive vocab_size and max_piece_length (at most usize::MAX / 4)"
+    },
+    {
+      "config": {
+        "label": "invalid_shrink",
+        "shrink": 2.0
+      },
+      "error": "MinGram pruning_shrinking_factor must be finite and in [0, 1)"
+    }
+  ],
+  "fallback_examples": {
+    "encoded": [
+      [
+        "😀"
+      ],
+      [
+        "<0xF09F98>",
+        "<0x81>"
+      ],
+      [
+        "<0xF0>",
+        "<0x93>",
+        "<0x80>",
+        "<0x80>"
+      ],
+      [
+        "日"
+      ],
+      [
+        "한"
+      ]
+    ]
+  }
+}

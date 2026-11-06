@@ -1,0 +1,75 @@
+{
+  "seed": 20261106,
+  "python_unicode": "15.1.0",
+  "normalization_cases": 6015,
+  "ctok_comparisons": 4010,
+  "fixed_utf8_comparisons": 500,
+  "ctok_differences": 52,
+  "examples": [
+    {
+      "op": "mark",
+      "mode": "v3",
+      "text": "aࣔb",
+      "cleaned": "aࣔb",
+      "decoded": "aࣔb",
+      "marked": "﷐a﷑ࣔ﷐b﷑",
+      "spans": [
+        "﷐a﷑",
+        "ࣔ",
+        "﷐b﷑"
+      ],
+      "reference": "﷐aࣔb﷑"
+    },
+    {
+      "op": "mark",
+      "mode": "v3",
+      "text": "aࣕb",
+      "cleaned": "aࣕb",
+      "decoded": "aࣕb",
+      "marked": "﷐a﷑ࣕ﷐b﷑",
+      "spans": [
+        "﷐a﷑",
+        "ࣕ",
+        "﷐b﷑"
+      ],
+      "reference": "﷐aࣕb﷑"
+    }
+  ],
+  "configuration_probes": [
+    {
+      "config": {
+        "label": "below_floor_budget",
+        "vocab_size": 248
+      },
+      "error": "The vocabulary is not large enough to contain all chars"
+    },
+    {
+      "config": {
+        "label": "exact_floor_budget",
+        "vocab_size": 249
+      },
+      "size": 251
+    },
+    {
+      "config": {
+        "label": "zero_iterations",
+        "iterations": 0
+      },
+      "size": 251
+    },
+    {
+      "config": {
+        "label": "zero_max_length",
+        "max_length": 0
+      },
+      "size": 249
+    },
+    {
+      "config": {
+        "label": "invalid_shrink",
+        "shrink": 2.0
+      },
+      "size": 251
+    }
+  ]
+}

@@ -236,6 +236,15 @@ impl<'a> Lattice<'a> {
     /// score-based `viterbi`/`nbest`/`sample` paths are untouched. An empty
     /// result means no path covers the sentence (no unk node could be placed).
     pub fn viterbi_min_tokens(&mut self) -> Vec<NodeRef> {
+        self.viterbi_min_tokens_with_cost(|_, _| 1)
+    }
+
+    /// Inference may emit several byte-fallback tokens for one character
+    /// node. Price those emissions inside the DP, before choosing a path.
+    pub(super) fn viterbi_min_tokens_with_cost(
+        &mut self,
+        token_cost: impl Fn(usize, &str) -> usize,
+    ) -> Vec<NodeRef> {
         let len = self.len;
         let eos_id = self.begin_nodes[len][0].borrow().node_id;
         // best[node_id] = (token count, total score) of the best path ending there.
@@ -248,6 +257,12 @@ impl<'a> Lattice<'a> {
             for rnode in &self.begin_nodes[pos] {
                 let rid = rnode.borrow().node_id;
                 let rscore = rnode.borrow().score;
+                let cost = if rid == eos_id {
+                    0
+                } else {
+                    let node = rnode.borrow();
+                    token_cost(node.id, &self.sentence[node.pos..node.pos + node.length])
+                };
                 let mut best_here: Option<(usize, f64)> = None;
                 let mut best_node: Option<NodeRef> = None;
                 // Start of the current best predecessor; decides full ties.
@@ -255,7 +270,7 @@ impl<'a> Lattice<'a> {
                 for lnode in &self.end_nodes[pos] {
                     if let Some((count, score)) = best[lnode.borrow().node_id] {
                         // The eos node terminates the path; it is not a token.
-                        let count = if rid == eos_id { count } else { count + 1 };
+                        let count = count + cost;
                         let candidate = (count, score + rscore);
                         let start = lnode.borrow().pos;
                         let better = match best_here {

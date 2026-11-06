@@ -1,0 +1,304 @@
+{
+  "source": "ctok/tests/fixtures/udhr.jsonl.gz",
+  "source_sha256": "fbe66450b72d671f2faee70f466ab061792bd7127844b06133615453dd5acde0",
+  "split": "Every fifth nonempty line, starting at index 0, held out; remaining lines train.",
+  "vocab_size": 1024,
+  "pretokenizer": "NFC + GPT4O regex + UTF-8 character boundaries",
+  "caveats": [
+    "UDHR is small and repetitive; these are not the paper's corpora or results.",
+    "Rust seeds on characters; script_tok learns UTF-8 prefixes and characters from byte atoms.",
+    "Reserved alphabets differ, and Rust limits pieces to 16 characters; vocabulary caps match; actual returned sizes are recorded.",
+    "Reference MinGram is saved and loaded before evaluation, as its loader floors unused atomic scores.",
+    "Rust timings use a debug build, include subprocess overhead, and are not a speed benchmark."
+  ],
+  "results": [
+    {
+      "language": "arb",
+      "train_lines": 47,
+      "test_lines": 12,
+      "train_utf8_bytes": 10303,
+      "test_utf8_bytes": 2760,
+      "reference_bpe": {
+        "size": 1024,
+        "test_tokens": 617,
+        "seconds": 1.2857432500022696
+      },
+      "rust_required_characters": 173,
+      "rust_fallback_pieces": 116,
+      "variants": [
+        {
+          "factor": 1.1,
+          "reference": {
+            "size": 939,
+            "test_tokens": 652,
+            "freshly_trained_test_tokens": 822,
+            "delta_vs_bpe_pct": 5.672609400324147,
+            "seconds": 3.1970772920030868
+          },
+          "rust": {
+            "size": 943,
+            "test_tokens": 642,
+            "delta_vs_reference_bpe_pct": 4.051863857374394,
+            "seconds": 0.09179491699615028
+          }
+        },
+        {
+          "factor": 2.0,
+          "reference": {
+            "size": 856,
+            "test_tokens": 1586,
+            "freshly_trained_test_tokens": 1627,
+            "delta_vs_bpe_pct": 157.05024311183143,
+            "seconds": 3.209897999986424
+          },
+          "rust": {
+            "size": 888,
+            "test_tokens": 940,
+            "delta_vs_reference_bpe_pct": 52.35008103727714,
+            "seconds": 0.1102361670054961
+          }
+        }
+      ]
+    },
+    {
+      "language": "deu_1996",
+      "train_lines": 47,
+      "test_lines": 12,
+      "train_utf8_bytes": 9252,
+      "test_utf8_bytes": 2387,
+      "reference_bpe": {
+        "size": 1024,
+        "test_tokens": 738,
+        "seconds": 0.5047652079956606
+      },
+      "rust_required_characters": 140,
+      "rust_fallback_pieces": 117,
+      "variants": [
+        {
+          "factor": 1.1,
+          "reference": {
+            "size": 875,
+            "test_tokens": 750,
+            "freshly_trained_test_tokens": 854,
+            "delta_vs_bpe_pct": 1.6260162601626105,
+            "seconds": 3.2105626660049893
+          },
+          "rust": {
+            "size": 878,
+            "test_tokens": 746,
+            "delta_vs_reference_bpe_pct": 1.084010840108407,
+            "seconds": 0.10408016599831171
+          }
+        },
+        {
+          "factor": 2.0,
+          "reference": {
+            "size": 783,
+            "test_tokens": 1172,
+            "freshly_trained_test_tokens": 1172,
+            "delta_vs_bpe_pct": 58.80758807588076,
+            "seconds": 3.2297600000019884
+          },
+          "rust": {
+            "size": 794,
+            "test_tokens": 1085,
+            "delta_vs_reference_bpe_pct": 47.01897018970189,
+            "seconds": 0.12288424999860581
+          }
+        }
+      ]
+    },
+    {
+      "language": "eng",
+      "train_lines": 48,
+      "test_lines": 12,
+      "train_utf8_bytes": 8042,
+      "test_utf8_bytes": 2180,
+      "reference_bpe": {
+        "size": 1024,
+        "test_tokens": 641,
+        "seconds": 0.5149652499967488
+      },
+      "rust_required_characters": 134,
+      "rust_fallback_pieces": 117,
+      "variants": [
+        {
+          "factor": 1.1,
+          "reference": {
+            "size": 818,
+            "test_tokens": 651,
+            "freshly_trained_test_tokens": 748,
+            "delta_vs_bpe_pct": 1.5600624024961096,
+            "seconds": 3.1651557499862975
+          },
+          "rust": {
+            "size": 815,
+            "test_tokens": 647,
+            "delta_vs_reference_bpe_pct": 0.9360374414976613,
+            "seconds": 0.08900745800929144
+          }
+        },
+        {
+          "factor": 2.0,
+          "reference": {
+            "size": 711,
+            "test_tokens": 852,
+            "freshly_trained_test_tokens": 864,
+            "delta_vs_bpe_pct": 32.91731669266771,
+            "seconds": 3.209285375007312
+          },
+          "rust": {
+            "size": 706,
+            "test_tokens": 852,
+            "delta_vs_reference_bpe_pct": 32.91731669266771,
+            "seconds": 0.10145845799706876
+          }
+        }
+      ]
+    },
+    {
+      "language": "fin",
+      "train_lines": 48,
+      "test_lines": 12,
+      "train_utf8_bytes": 8669,
+      "test_utf8_bytes": 2400,
+      "reference_bpe": {
+        "size": 1024,
+        "test_tokens": 740,
+        "seconds": 0.508374333003303
+      },
+      "rust_required_characters": 136,
+      "rust_fallback_pieces": 116,
+      "variants": [
+        {
+          "factor": 1.1,
+          "reference": {
+            "size": 946,
+            "test_tokens": 722,
+            "freshly_trained_test_tokens": 837,
+            "delta_vs_bpe_pct": -2.43243243243243,
+            "seconds": 3.199674874995253
+          },
+          "rust": {
+            "size": 944,
+            "test_tokens": 722,
+            "delta_vs_reference_bpe_pct": -2.43243243243243,
+            "seconds": 0.10670241600018926
+          }
+        },
+        {
+          "factor": 2.0,
+          "reference": {
+            "size": 1014,
+            "test_tokens": 1104,
+            "freshly_trained_test_tokens": 1464,
+            "delta_vs_bpe_pct": 49.1891891891892,
+            "seconds": 3.2346583749895217
+          },
+          "rust": {
+            "size": 1003,
+            "test_tokens": 1091,
+            "delta_vs_reference_bpe_pct": 47.43243243243243,
+            "seconds": 0.13544287500553764
+          }
+        }
+      ]
+    },
+    {
+      "language": "kor",
+      "train_lines": 48,
+      "test_lines": 12,
+      "train_utf8_bytes": 8540,
+      "test_utf8_bytes": 2452,
+      "reference_bpe": {
+        "size": 1024,
+        "test_tokens": 566,
+        "seconds": 0.5153459160064813
+      },
+      "rust_required_characters": 421,
+      "rust_fallback_pieces": 212,
+      "variants": [
+        {
+          "factor": 1.1,
+          "reference": {
+            "size": 855,
+            "test_tokens": 672,
+            "freshly_trained_test_tokens": 801,
+            "delta_vs_bpe_pct": 18.727915194346288,
+            "seconds": 3.2097917920036707
+          },
+          "rust": {
+            "size": 1013,
+            "test_tokens": 567,
+            "delta_vs_reference_bpe_pct": 0.17667844522968323,
+            "seconds": 0.07291441700363066
+          }
+        },
+        {
+          "factor": 2.0,
+          "reference": {
+            "size": 767,
+            "test_tokens": 1387,
+            "freshly_trained_test_tokens": 1423,
+            "delta_vs_bpe_pct": 145.05300353356893,
+            "seconds": 3.2144424169964623
+          },
+          "rust": {
+            "size": 1024,
+            "test_tokens": 628,
+            "delta_vs_reference_bpe_pct": 10.954063604240272,
+            "seconds": 0.10703187499893829
+          }
+        }
+      ]
+    },
+    {
+      "language": "rus",
+      "train_lines": 47,
+      "test_lines": 12,
+      "train_utf8_bytes": 16471,
+      "test_utf8_bytes": 4486,
+      "reference_bpe": {
+        "size": 1024,
+        "test_tokens": 758,
+        "seconds": 0.5331462500034831
+      },
+      "rust_required_characters": 179,
+      "rust_fallback_pieces": 116,
+      "variants": [
+        {
+          "factor": 1.1,
+          "reference": {
+            "size": 929,
+            "test_tokens": 783,
+            "freshly_trained_test_tokens": 903,
+            "delta_vs_bpe_pct": 3.298153034300788,
+            "seconds": 3.2568889999965904
+          },
+          "rust": {
+            "size": 927,
+            "test_tokens": 766,
+            "delta_vs_reference_bpe_pct": 1.055408970976246,
+            "seconds": 0.10733970899309497
+          }
+        },
+        {
+          "factor": 2.0,
+          "reference": {
+            "size": 1015,
+            "test_tokens": 1256,
+            "freshly_trained_test_tokens": 1859,
+            "delta_vs_bpe_pct": 65.69920844327177,
+            "seconds": 3.2557764170051087
+          },
+          "rust": {
+            "size": 1024,
+            "test_tokens": 1001,
+            "delta_vs_reference_bpe_pct": 32.058047493403684,
+            "seconds": 0.15738129199598916
+          }
+        }
+      ]
+    }
+  ]
+}

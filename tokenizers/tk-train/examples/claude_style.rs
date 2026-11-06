@@ -32,7 +32,7 @@ use tk_encode::pipeline::{
 };
 use tk_encode::pre_tokenizers::mark_split::MarkSplit;
 use tk_encode::vocab::bucket_added_vocabulary::AddedVocabulary;
-use tk_train::trainers::{MinGramTrainer, SeedInit};
+use tk_train::trainers::MinGramTrainer;
 
 /// Tiny multilingual corpus: English plus Thai and Devanagari words whose
 /// marks (tone marks, virama) survive NFC and trigger the mark-breaking bug
@@ -84,8 +84,6 @@ fn train(marking: &MarkBoundaries) -> Result<Unigram, Box<dyn Error + Send + Syn
     let trainer = MinGramTrainer::builder()
         .show_progress(false)
         .vocab_size(400)
-        .seed_size(500)
-        .seed_init(SeedInit::Bpe)
         .build()
         .unwrap();
     let mut model = Unigram::default();

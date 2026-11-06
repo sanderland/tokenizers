@@ -184,3 +184,10 @@ pub fn classify_scalar(text: &[u8], tags: &mut [u8]) {
         i += w;
     }
 }
+
+/// Classify one Unicode scalar using the same generated category tables as
+/// the byte classifier. The returned tag includes its refinement bits.
+pub fn classify_char(c: char) -> u8 {
+    let mut buf = [0; 4];
+    ATOM_TABLES.classify_char(c.encode_utf8(&mut buf).as_bytes(), 0)
+}

@@ -63,4 +63,8 @@ tk-serialize = { path = "../tk-serialize", features = [
 
 [[example]]
 name = "claude_style"
-required-features = ["normalizers"]
+required-features = ["normalizers", "unigram", "bpe"]
+
+[[example]]
+name = "review_mingram"
+required-features = ["normalizers", "unigram", "bpe"]

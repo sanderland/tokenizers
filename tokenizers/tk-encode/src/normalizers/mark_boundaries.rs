@@ -16,9 +16,10 @@
 //! This lives in the normalizer slot rather than with the pre-tokenizers for a
 //! mechanical reason: pipeline pre-tokenizers emit spans into the text they are
 //! given, while this is a rewrite (it inserts marker codepoints, deletes seam
-//! spaces, and lowercases spans). The model then tiles the marked stream whole,
-//! with the pre-tokenizer slot left empty. Offsets past this point are relative
-//! to the marked stream.
+//! spaces, and lowercases spans). Pair it with `MarkSplit` to train and encode
+//! separate marked spans, as in the Claude-inspired recipe. Leave the
+//! pre-tokenizer empty only when whole-stream tiling is intended, as in ctok.
+//! Offsets past this point are relative to the marked stream.
 
 use std::borrow::Cow;
 
@@ -26,6 +27,31 @@ use unicode_categories::UnicodeCategories;
 use unicode_normalization::char::canonical_combining_class;
 
 use crate::{pipeline, tokenizer::Result};
+// Use the current, shared general-category tables. Combining class alone
+// misses zero-CCC marks, and unicode_categories has stale category data.
+fn is_mark(c: char) -> bool {
+    bitcannon::classify::classify_char(c) == bitcannon::classify::Atom::Mark as u8
+}
+
+fn is_letter(c: char) -> bool {
+    bitcannon::classify::classify_char(c) & 0x0F == bitcannon::classify::Atom::Letter as u8
+}
+
+fn is_decimal(c: char) -> bool {
+    // NumWord = Nd ∪ Nl; every Nl is Alphabetic, and no Nd is.
+    bitcannon::classify::classify_char(c) & 0x0F == bitcannon::classify::Atom::NumWord as u8
+        && !c.is_alphabetic()
+}
+
+fn is_other_number(c: char) -> bool {
+    bitcannon::classify::classify_char(c) & 0x0F == bitcannon::classify::Atom::NumOther as u8
+}
+
+fn is_punct_or_symbol(c: char) -> bool {
+    use bitcannon::classify::{Atom, classify_char};
+    let tag = classify_char(c);
+    matches!(tag & 0x0F, 7..=10) || tag == Atom::AlphaSymMark as u8
+}
 
 // ---- marker notation (ctok/ctok/constants.py) ----
 
@@ -74,13 +100,8 @@ fn is_alphabetic(c: char) -> bool {
 /// `\p{Cn}`: a `char` is unassigned when it sits in none of the seven major
 /// groups. (`is_other` covers Cc, Cf and Co only; surrogates cannot be `char`.)
 fn is_unassigned(c: char) -> bool {
-    !(c.is_other()
-        || c.is_letter()
-        || c.is_mark()
-        || c.is_number()
-        || c.is_punctuation()
-        || c.is_symbol()
-        || c.is_separator())
+    bitcannon::classify::classify_char(c) & 0x0F == bitcannon::classify::Atom::Control as u8
+        && !c.is_other()
 }
 
 /// The stream class of one codepoint (ctok `normalize.classify`).
@@ -127,7 +148,7 @@ fn classify(c: char, marks_part_of_words: bool) -> Class {
     {
         return Class::Wordy;
     }
-    if c.is_number_decimal_digit()
+    if is_decimal(c)
         && (o < 0x80 || (0x0660..=0x0669).contains(&o) || (0x06F0..=0x06F9).contains(&o))
     {
         return Class::Digit;
@@ -141,7 +162,7 @@ fn classify(c: char, marks_part_of_words: bool) -> Class {
     if (VARIATION_SELECTORS.0..=VARIATION_SELECTORS.1).contains(&o) {
         return Class::Hard;
     }
-    if c.is_mark() {
+    if is_mark(c) {
         // Fixed mode keeps every mark in its word. Buggy mode (Claude) keeps
         // only Alphabetic marks in range; the rest split the word. Variation
         // selectors return Hard above and ride their base in both modes.
@@ -151,7 +172,7 @@ fn classify(c: char, marks_part_of_words: bool) -> Class {
             Class::Hard
         };
     }
-    if c.is_letter() && !is_hard_cp(o) {
+    if is_letter(c) && !is_hard_cp(o) {
         return Class::Wordy;
     }
     Class::Hard
@@ -195,7 +216,7 @@ fn span_is_upper(span: &[char]) -> bool {
 /// Unicode "cased" for the final-sigma rule (Lu/Ll/Lt; close enough to
 /// CPython's rule for spans the case markers reach).
 fn is_cased(c: char) -> bool {
-    c.is_letter_uppercase() || c.is_letter_lowercase() || c.is_letter_titlecase()
+    matches!(bitcannon::classify::classify_char(c), 0x10 | 0x20)
 }
 
 /// Python-compatible span lowering. `final_sigma` applies the Σ -> ς rule
@@ -252,7 +273,7 @@ fn mark_case(span: &str, allcaps_min: Option<usize>, head_mark: bool) -> String 
         return span.to_string();
     }
     let unlowerable = chars.iter().any(|&c| {
-        (is_new_cased(c) || c.is_letter() || c.is_mark())
+        (is_new_cased(c) || is_letter(c) || is_mark(c))
             && !is_lower(c)
             && (!is_upper(c) || lower_char(c) == c.to_string())
     });
@@ -281,7 +302,7 @@ fn is_selector(ch: char) -> bool {
 }
 
 fn is_separator(c: char) -> bool {
-    (c as u32) < 0x10000 && c.is_mark() && !is_selector(c) && !is_alphabetic(c)
+    (c as u32) < 0x10000 && is_mark(c) && !is_selector(c) && !is_alphabetic(c)
 }
 
 fn is_syriac_vowel(c: char) -> bool {
@@ -315,19 +336,17 @@ fn marks_like_punct(ch: char) -> bool {
     }
     let ideographic_punct =
         (0x3001..=0x303F).contains(&o) && (ch.is_punctuation() || IDEOGRAPHIC_SYMBOLS.contains(ch));
-    (ch.is_punctuation() || ch.is_symbol() || ch.is_other_format() || is_unassigned(ch))
-        && !ideographic_punct
+    (is_punct_or_symbol(ch) || ch.is_other_format() || is_unassigned(ch)) && !ideographic_punct
 }
 
 fn digit_border(ch: char) -> bool {
-    (ch.is_number_other() || (ch.is_number_decimal_digit() && !ch.is_ascii()))
-        && (ch as u32) < 0x10000
+    (is_other_number(ch) || (is_decimal(ch) && !ch.is_ascii())) && (ch as u32) < 0x10000
 }
 
 fn digit_kind(ch: char) -> u8 {
-    if ch.is_number_decimal_digit() {
+    if is_decimal(ch) {
         0
-    } else if ch.is_number_other() {
+    } else if is_other_number(ch) {
         1
     } else {
         2
@@ -495,8 +514,8 @@ fn apply_seam_law(marked: &str) -> String {
 }
 
 /// Boundary-marking normalizer: rewrites clean text to the marked stream
-/// (word boundaries, case and absorbed spaces as markers). The model then
-/// tiles the marked stream whole. The rules below are ctok's, measured on
+/// (word boundaries, case and absorbed spaces as markers). The pre-tokenizer
+/// separately decides which spans the model may tile. These rules are ctok's, measured on
 /// Claude tokenizers (see `docs/claude_boundaries.md` in the workspace).
 ///
 /// Options select the boundary rules. The default is the fixed
@@ -808,6 +827,44 @@ mod tests {
         assert_eq!(
             &*mark.normalize("hello world", 0).unwrap(),
             format!("{B}hello{E}{B}world{E}")
+        );
+    }
+
+    #[test]
+    fn newer_zero_ccc_marks_follow_the_selected_mark_policy() {
+        // The old category tables miss these Alphabetic marks, including
+        // marks with canonical combining class 0. ctok keeps them in words.
+        for c in ['\u{08D4}', '\u{0AFA}', '\u{0C04}', '\u{0CF3}', '\u{0D00}'] {
+            let word = format!("a{c}b");
+            for marking in [
+                MarkBoundaries::v3(),
+                MarkBoundaries::v47(),
+                MarkBoundaries::default(),
+            ] {
+                assert_eq!(marking.marked_stream(&word), format!("{B}{word}{E}"));
+            }
+        }
+        // A newer non-Alphabetic mark stays inside only in fixed mode.
+        let word = "a\u{1AC1}b";
+        assert_eq!(
+            MarkBoundaries::default().marked_stream(word),
+            format!("{B}{word}{E}")
+        );
+        assert_ne!(
+            MarkBoundaries::v47().marked_stream(word),
+            format!("{B}{word}{E}")
+        );
+    }
+
+    #[test]
+    fn modern_georgian_letters_use_word_and_case_rules() {
+        assert_eq!(
+            MarkBoundaries::v47().marked_stream("Აბ"),
+            format!("{S}{B}აბ{E}")
+        );
+        assert_eq!(
+            MarkBoundaries::v3().marked_stream("ᲐᲑᲒᲓ"),
+            format!("{C}{B}აბგდ{E}")
         );
     }
 }

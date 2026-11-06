@@ -34,6 +34,10 @@ pub enum PruneCriterion {
     MinimumIncrease,
 }
 
+fn default_seed_factor() -> f64 {
+    1.1
+}
+
 /// A `MinGramTrainer` trains a `Unigram` model from `word_counts` with hard EM.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +51,8 @@ pub struct MinGramTrainer {
 
     pub max_piece_length: usize,
     seed_size: Option<usize>,
+    #[serde(default = "default_seed_factor")]
+    pub seed_factor: f64,
     pub seed_init: SeedInit,
     pub prune_criterion: PruneCriterion,
     pub pruning_shrinking_factor: f64,
@@ -65,6 +71,7 @@ pub struct MinGramTrainerBuilder {
     initial_alphabet: Option<AHashSet<char>>,
     max_piece_length: Option<usize>,
     seed_size: Option<usize>,
+    seed_factor: Option<f64>,
     seed_init: Option<SeedInit>,
     prune_criterion: Option<PruneCriterion>,
     pruning_shrinking_factor: Option<f64>,
@@ -103,8 +110,18 @@ impl MinGramTrainerBuilder {
         self
     }
 
+    /// Total seed cap before the internal UNK, including the required
+    /// character alphabet. Unset defaults to a 10% overshoot of the
+    /// learnable multi-character budget. Byte fallbacks are separate.
     pub fn seed_size(&mut self, seed_size: usize) -> &mut Self {
         self.seed_size = Some(seed_size);
+        self
+    }
+
+    /// Overshoot the available multi-character budget by this factor.
+    /// Defaults to 1.1; an explicit `seed_size` takes precedence.
+    pub fn seed_factor(&mut self, seed_factor: f64) -> &mut Self {
+        self.seed_factor = Some(seed_factor);
         self
     }
 
@@ -149,6 +166,7 @@ impl MinGramTrainerBuilder {
             initial_alphabet: self.initial_alphabet.clone().unwrap_or_default(),
             max_piece_length: self.max_piece_length.unwrap_or(16),
             seed_size: self.seed_size,
+            seed_factor: self.seed_factor.unwrap_or_else(default_seed_factor),
             seed_init: self.seed_init.unwrap_or(SeedInit::Bpe),
             prune_criterion: self.prune_criterion.unwrap_or_default(),
             pruning_shrinking_factor: self.pruning_shrinking_factor.unwrap_or(0.0),
@@ -427,6 +445,37 @@ impl MinGramTrainer {
         MinGramTrainerBuilder::default()
     }
 
+    /// Also validate at execution time: fields are public and serde can bypass the builder.
+    fn validate(&self) -> Result<()> {
+        if self.vocab_size == 0
+            || self.max_piece_length == 0
+            || self.max_piece_length > usize::MAX / 4
+        {
+            return Err("MinGram requires positive vocab_size and max_piece_length (at most usize::MAX / 4)".into());
+        }
+        if self.n_sub_iterations == 0 {
+            return Err("MinGram requires at least one EM sub-iteration".into());
+        }
+        if self.seed_size == Some(0) {
+            return Err("MinGram seed_size must be positive".into());
+        }
+        if !self.seed_factor.is_finite() || self.seed_factor < 1.0 {
+            return Err("MinGram seed_factor must be finite and at least 1".into());
+        }
+        if !self.pruning_shrinking_factor.is_finite()
+            || !(0.0..1.0).contains(&self.pruning_shrinking_factor)
+        {
+            return Err("MinGram pruning_shrinking_factor must be finite and in [0, 1)".into());
+        }
+        let mut specials = AHashSet::new();
+        for token in &self.special_tokens {
+            if !specials.insert(&token.content) {
+                return Err("MinGram special tokens must have unique spellings".into());
+            }
+        }
+        Ok(())
+    }
+
     /// Setup a progress bar if asked to show progress
     fn setup_progress(&self) -> Option<ProgressBar> {
         if self.show_progress {
@@ -462,13 +511,13 @@ impl MinGramTrainer {
 
     /// Hard E-step: segment each word on its minimum-token-count path and
     /// accumulate frequency-weighted piece counts. No forward-backward pass.
-    fn run_e_step(&self, model: &Unigram, sentences: &[Sentence]) -> (u32, Vec<f64>) {
+    fn run_e_step(&self, model: &Unigram, sentences: &[Sentence]) -> (u64, Vec<f64>) {
         let chunk_size = std::cmp::max(sentences.len() / current_num_threads(), 1);
         sentences
             .maybe_par_chunks(chunk_size)
             .map(|sentences_chunk| {
                 let mut expected: Vec<f64> = vec![0.0; model.len()];
-                let mut ntokens: u32 = 0;
+                let mut ntokens: u64 = 0;
 
                 for (string, freq) in sentences_chunk {
                     let mut lattice = Lattice::from(string, model.bos_id, model.eos_id);
@@ -483,7 +532,7 @@ impl MinGramTrainer {
                             expected[id] += *freq as f64;
                         }
                     }
-                    ntokens += path.len() as u32;
+                    ntokens += path.len() as u64 * *freq as u64;
                 }
                 (ntokens, expected)
             })
@@ -570,19 +619,20 @@ impl MinGramTrainer {
             .count();
         let non_atomic = pieces.len() - 1 - n_singles;
         let shrink_n = (non_atomic as f64 * (1.0 - self.pruning_shrinking_factor)) as usize;
-        final_size.max(non_atomic.saturating_sub(shrink_n))
+        final_size.max(1 + n_singles + non_atomic.saturating_sub(shrink_n))
     }
 
     /// Re-estimate MLE log-probs for a fixed piece list by hard EM: segment
     /// the sentences on min-token paths and normalize the counts. Nothing is
     /// pruned, so the output aligns with the input pieces; unseen pieces floor
     /// at 0.5, below any seen count, which keeps their scores finite (the
-    /// `tokenizer.json` writer rejects non-finite scores) and losing every tie.
+    /// `tokenizer.json` writer rejects non-finite scores).
     pub fn em_scores(
         &self,
         pieces: &[String],
         sentences: &[(String, u32)],
     ) -> Result<Vec<(String, f64)>> {
+        self.validate()?;
         let mut model_pieces: Vec<SentencePiece> = std::iter::once(("<UNK>".into(), f64::NAN))
             .chain(pieces.iter().map(|piece| (piece.clone(), 0.0)))
             .collect();
@@ -616,17 +666,43 @@ impl MinGramTrainer {
         sentences: &[(String, u32)],
         target_size: usize,
     ) -> Result<Vec<(String, f64)>> {
+        self.validate()?;
+        let required = pieces
+            .iter()
+            .filter(|(s, _)| s.chars().count() == 1)
+            .count();
+        if target_size < required {
+            return Err(
+                "MinGram trim target is smaller than its required character alphabet".into(),
+            );
+        }
         let with_unk: Vec<SentencePiece> = std::iter::once(("<UNK>".into(), f64::NAN))
             .chain(pieces.iter().cloned())
             .collect();
-        let model = Unigram::from(with_unk.clone(), Some(0), false)?;
-        let kept = mi_prune(
-            &with_unk,
-            sentences,
-            &model,
-            target_size + 1,
-            self.skip_substring_in_batch,
-        );
+        if pieces
+            .iter()
+            .any(|(piece, score)| piece.is_empty() || score.is_nan())
+        {
+            return Err("MinGram trim requires nonempty pieces and scores without NaN".into());
+        }
+        let target = target_size
+            .checked_add(1)
+            .ok_or("MinGram trim target is too large")?;
+        let mut kept = with_unk;
+        while kept.len() > target {
+            let model = Unigram::from(kept.clone(), Some(0), false)?;
+            let next = mi_prune(
+                &kept,
+                sentences,
+                &model,
+                target,
+                self.skip_substring_in_batch,
+            );
+            if next.len() >= kept.len() {
+                return Err("MinGram trim made no progress toward its target".into());
+            }
+            kept = next;
+        }
         Ok(kept.into_iter().skip(1).collect())
     }
 
@@ -635,6 +711,58 @@ impl MinGramTrainer {
         sentences: Vec<Sentence>,
         model: &mut Unigram,
     ) -> Result<Vec<AddedToken>> {
+        self.validate()?;
+        let mut sentences: Vec<_> = sentences
+            .into_iter()
+            .filter(|(text, count)| !text.is_empty() && *count > 0)
+            .collect();
+        if sentences.is_empty() {
+            return Err("MinGram requires non-empty training text with positive counts".into());
+        }
+        // Stable reduction order, including when Trainer::feed collected a hash map.
+        sentences.sort_by(|a, b| a.0.cmp(&b.0));
+        let required_chars = seed::required_chars(&sentences, &self.initial_alphabet);
+        if self
+            .seed_size
+            .is_some_and(|size| size < required_chars.len())
+        {
+            return Err(format!(
+                "MinGram seed_size must cover its {} required characters",
+                required_chars.len()
+            )
+            .into());
+        }
+        let floor = seed::byte_floor_pieces(&required_chars);
+        for special in &self.special_tokens {
+            if required_chars.contains(&special.content) || floor.contains(&special.content) {
+                return Err(
+                    "MinGram special token collides with a required character or byte fallback"
+                        .into(),
+                );
+            }
+        }
+        let floor_size = floor.len();
+        let reserved = floor_size + self.special_tokens.len();
+        let learned_size = (self.vocab_size as usize)
+            .checked_sub(reserved)
+            .filter(|size| *size >= required_chars.len())
+            .ok_or(UnigramTrainerError::VocabularyTooSmall)?;
+        let alphabet = required_chars
+            .iter()
+            .map(|s| s.chars().next().unwrap())
+            .collect();
+        // Overshoot the learnable portion by 10%, as in script_tok. Byte
+        // fallbacks are reserved now, not silently paid for after pruning.
+        let seed_size = match self.seed_size {
+            Some(size) => size,
+            None => required_chars
+                .len()
+                .checked_add(
+                    ((learned_size - required_chars.len()) as f64 * self.seed_factor).ceil()
+                        as usize,
+                )
+                .ok_or("MinGram seed_factor produces a seed too large to represent")?,
+        };
         let progress = self.setup_progress();
         //
         // 1. Seed the vocabulary (BPE tokens by default)
@@ -648,11 +776,21 @@ impl MinGramTrainer {
         pieces.extend(seed::make_seed_pieces(
             &sentences,
             self.seed_init,
-            self.seed_size.unwrap_or(seed::DEFAULT_SEED_SIZE),
+            seed_size,
             self.max_piece_length,
-            &self.initial_alphabet,
+            &alphabet,
             &progress,
         )?);
+        // Substring seeding only includes observed characters. Both seeds
+        // must cover the same forced alphabet throughout training.
+        let present: AHashSet<String> = pieces.iter().map(|(s, _)| s.clone()).collect();
+        let mut missing: Vec<_> = required_chars
+            .iter()
+            .filter(|s| !present.contains(*s))
+            .cloned()
+            .collect();
+        missing.sort();
+        pieces.extend(missing.into_iter().map(|s| (s, -100.0)));
         self.finalize_progress(&progress, sentences.len());
 
         debug!(
@@ -661,16 +799,11 @@ impl MinGramTrainer {
             sentences.len()
         );
 
-        let required_chars = seed::required_chars(&sentences, &self.initial_alphabet);
-        if required_chars.len() as u32 > self.vocab_size {
-            return Err(Box::new(UnigramTrainerError::VocabularyTooSmall));
-        }
-
         // 2. Outer EM/prune loop (script_tok schedule): EM sub-iterations,
         // break at size, shrink-step prune. A zero shrinking factor prunes
         // to the final size in the first round and re-estimates once more;
         // above zero the bar pins early and further rounds run past it.
-        let final_size = self.vocab_size as usize;
+        let final_size = learned_size + 1; // includes the internal UNK
         let expected_updates = self.n_sub_iterations as usize * 2;
         self.update_progress(&progress, expected_updates, "Hard EM training");
         let mut new_model = Unigram::from(pieces.clone(), Some(0), false)?;
@@ -705,8 +838,14 @@ impl MinGramTrainer {
         self.finalize_progress(&progress, expected_updates);
 
         // 3. Final exact prune (criterion-dispatched) down to `vocab_size`.
-        pieces = self.prune_to_target(&pieces, &sentences, &new_model, final_size);
-        new_model = Unigram::from(pieces.clone(), Some(0), false)?;
+        while pieces.len() > final_size {
+            let next = self.prune_to_target(&pieces, &sentences, &new_model, final_size);
+            if next.len() >= pieces.len() {
+                return Err("MinGram pruning made no progress toward the vocabulary budget".into());
+            }
+            pieces = next;
+            new_model = Unigram::from(pieces.clone(), Some(0), false)?;
+        }
 
         // 4. Adjust the size of sentencepieces to be |vocab_size|.
         // No unk token: the hardcoded alphabet plus the byte floor cover
@@ -798,7 +937,7 @@ mod tests {
 
         // "ab" scores below [a, b], but the min-count path still takes it.
         let (ntokens, expected) = trainer.run_e_step(&model, &[("ab".to_string(), 3)]);
-        assert_eq!(ntokens, 1);
+        assert_eq!(ntokens, 3);
         assert_eq!(expected, vec![0.0, 0.0, 0.0, 3.0]);
     }
 
@@ -809,7 +948,7 @@ mod tests {
         let model = Unigram::from(vec![("a".into(), 0.0)], None, false).unwrap();
         let trainer = MinGramTrainer::builder().build().unwrap();
         let (ntokens, expected) = trainer.run_e_step(&model, &[("z".to_string(), 3)]);
-        assert_eq!(ntokens, 1);
+        assert_eq!(ntokens, 3);
         assert_eq!(expected, vec![0.0]);
     }
 
@@ -865,7 +1004,7 @@ mod tests {
         let trainer = MinGramTrainer::builder()
             .show_progress(false)
             .vocab_size(300)
-            .seed_size(30)
+            .seed_size(300)
             .build()
             .unwrap();
         assert_eq!(trainer.seed_init, SeedInit::Bpe);
@@ -1023,7 +1162,7 @@ mod tests {
             let trainer = MinGramTrainer::builder()
                 .show_progress(false)
                 .vocab_size(300)
-                .seed_size(30)
+                .seed_size(300)
                 .seed_init(SeedInit::Substrings)
                 .prune_criterion(PruneCriterion::MinimumIncrease)
                 .pruning_shrinking_factor(0.5)
@@ -1046,7 +1185,7 @@ mod tests {
             let trainer = MinGramTrainer::builder()
                 .show_progress(false)
                 .vocab_size(300)
-                .seed_size(30)
+                .seed_size(300)
                 .build()
                 .unwrap();
             let mut model = Unigram::default();
@@ -1065,7 +1204,7 @@ mod tests {
             let trainer = MinGramTrainer::builder()
                 .show_progress(false)
                 .vocab_size(300)
-                .seed_size(40)
+                .seed_size(400)
                 .seed_init(SeedInit::Substrings)
                 .build()
                 .unwrap();
@@ -1099,5 +1238,137 @@ mod tests {
             assert!(spellings.contains(&piece), "missing real piece {piece:?}");
         }
         assert_eq!(train(), once);
+    }
+
+    #[test]
+    fn exact_floor_budget_keeps_no_learned_pieces() {
+        // 128 ASCII + 5 markers + 115 byte singles + marker prefix EFB7.
+        // Previously the finalizer inserted learned pieces before checking
+        // a budget which was already full, emitting 251 pieces for 249 slots.
+        for vocab_size in [249, 250, 260] {
+            let trainer = MinGramTrainer::builder()
+                .show_progress(false)
+                .vocab_size(vocab_size)
+                .seed_size(300)
+                .build()
+                .unwrap();
+            let mut model = Unigram::default();
+            trainer
+                .do_train(vec![("abc".into(), 20), ("ab".into(), 10)], &mut model)
+                .unwrap();
+            assert!(model.len() <= vocab_size as usize);
+            if vocab_size == 249 {
+                assert!(model.token_to_id("ab").is_none());
+                assert!(model.token_to_id("abc").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_configs_fail_before_training() {
+        let base = MinGramTrainer::default();
+        let mut invalid = Vec::new();
+        let mut t = base.clone();
+        t.n_sub_iterations = 0;
+        invalid.push(t);
+        let mut t = base.clone();
+        t.max_piece_length = 0;
+        invalid.push(t);
+        let mut t = base.clone();
+        t.seed_size = Some(0);
+        invalid.push(t);
+        for factor in [-1.0, 1.0, 2.0, f64::NAN, f64::INFINITY] {
+            let mut t = base.clone();
+            t.pruning_shrinking_factor = factor;
+            invalid.push(t);
+        }
+        for factor in [0.0, 0.9, f64::NAN, f64::INFINITY] {
+            let mut t = base.clone();
+            t.seed_factor = factor;
+            invalid.push(t);
+        }
+        for trainer in invalid {
+            assert!(
+                trainer
+                    .do_train(tiny_corpus(), &mut Unigram::default())
+                    .is_err()
+            );
+        }
+        assert!(base.do_train(vec![], &mut Unigram::default()).is_err());
+        assert!(
+            base.do_train(vec![("abc".into(), 0)], &mut Unigram::default())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn gradual_pruning_retains_the_required_alphabet_in_its_target() {
+        let trainer = MinGramTrainer::builder()
+            .pruning_shrinking_factor(0.5)
+            .build()
+            .unwrap();
+        let pieces = ["<UNK>", "a", "b", "c", "ab", "bc", "abc", "abca"]
+            .into_iter()
+            .map(|s| (s.to_owned(), 0.0))
+            .collect::<Vec<_>>();
+        // 3 singles + UNK + half of the 4 non-atomic pieces.
+        assert_eq!(trainer.shrink_target(&pieces, 5), 6);
+    }
+
+    #[test]
+    fn default_seed_is_relative_and_corpus_order_does_not_change_the_model() {
+        let trainer = MinGramTrainer::builder()
+            .show_progress(false)
+            .vocab_size(300)
+            .build()
+            .unwrap();
+        let mut first = Unigram::default();
+        trainer.do_train(tiny_corpus(), &mut first).unwrap();
+        let mut reversed = tiny_corpus();
+        reversed.reverse();
+        let mut second = Unigram::default();
+        trainer.do_train(reversed, &mut second).unwrap();
+        assert_eq!(first, second);
+        assert!(first.len() <= 300);
+        assert!(first.encode("hello").unwrap().len() < 5);
+    }
+
+    #[test]
+    fn substring_skip_trim_still_reaches_the_requested_size() {
+        let trainer = MinGramTrainer::default();
+        let pieces = ["a", "aa", "aaa", "aaaa"]
+            .into_iter()
+            .map(|s| (s.to_owned(), 0.0))
+            .collect::<Vec<_>>();
+        let trimmed = trainer
+            .mingram_pp_trim(&pieces, &[("aaaa".into(), 10)], 1)
+            .unwrap();
+        assert_eq!(trimmed, [("a".to_owned(), 0.0)]);
+        assert!(trainer.mingram_pp_trim(&pieces, &[], 0).is_err());
+    }
+
+    #[test]
+    fn old_serialized_trainer_defaults_to_a_small_seed_factor() {
+        let mut value = serde_json::to_value(MinGramTrainer::default()).unwrap();
+        value.as_object_mut().unwrap().remove("seed_factor");
+        let trainer: MinGramTrainer = serde_json::from_value(value).unwrap();
+        assert_eq!(trainer.seed_factor, 1.1);
+    }
+
+    #[test]
+    fn explicit_seed_cap_overrides_factor_without_computing_an_unused_huge_seed() {
+        let train = |factor| {
+            let trainer = MinGramTrainer::builder()
+                .show_progress(false)
+                .vocab_size(300)
+                .seed_size(300)
+                .seed_factor(factor)
+                .build()
+                .unwrap();
+            let mut model = Unigram::default();
+            trainer.do_train(tiny_corpus(), &mut model).unwrap();
+            model
+        };
+        assert_eq!(train(1.1), train(1e308));
     }
 }

@@ -179,10 +179,10 @@ fn make_bpe_seed_pieces(
     // but the re-segmentation counts below sum floats per piece.
     let mut ordered: Vec<&Sentence> = sentences.iter().collect();
     ordered.sort_by(|a, b| a.0.cmp(&b.0));
-    let word_counts: AHashMap<CompactString, u64> = ordered
-        .iter()
-        .map(|(word, count)| (CompactString::from(word), *count as u64))
-        .collect();
+    let mut word_counts: AHashMap<CompactString, u64> = AHashMap::new();
+    for (word, count) in &ordered {
+        *word_counts.entry(CompactString::from(word)).or_default() += *count as u64;
+    }
 
     // BPE's max_token_length counts bytes; every char is at most 4 bytes, so
     // this bound excludes no piece that the char-based filter below would keep.
@@ -302,7 +302,7 @@ fn prefix_pieces(required_chars: &AHashSet<String>) -> Vec<String> {
 /// char is a required piece and tiles in one token with a real or
 /// backfilled score. One-byte prefixes are skipped as well: a one-byte
 /// prefix plus a single tiles no better than two singles.
-fn byte_floor_pieces(required_chars: &AHashSet<String>) -> Vec<String> {
+pub(crate) fn byte_floor_pieces(required_chars: &AHashSet<String>) -> Vec<String> {
     let mut out: Vec<String> = (0x80u32..=0xBF)
         .chain(0xC2..=0xF4)
         .map(|b| format!("<0x{b:02X}>"))
@@ -334,6 +334,7 @@ pub(crate) fn finalize(
 
     // We don't want to include the <UNK> that was used to train
     inserted.insert("<UNK>".into());
+    inserted.extend(special_tokens.iter().map(|t| t.content.clone()));
 
     let existing_pieces: AHashMap<String, f64> = model.iter().cloned().collect();
     // Deterministic order: backfill scores and stable-sort ties must not
@@ -380,15 +381,14 @@ pub(crate) fn finalize(
     }
     let learned_target = target - floor.len();
     for (token, score) in model.iter() {
+        if pieces.len() >= learned_target {
+            break;
+        }
         if inserted.contains::<str>(token) {
             continue;
         }
         inserted.insert(token.to_string());
         pieces.push((token.to_string(), if score.is_nan() { 0.0 } else { *score }));
-
-        if pieces.len() == learned_target {
-            break;
-        }
     }
     pieces.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap());
     for spelling in floor {
@@ -549,6 +549,16 @@ mod tests {
         // One slot short of required + floor: fail, don't overshoot.
         let chars: AHashSet<String> = ["a".to_string()].into_iter().collect();
         assert!(finalize(115, &[], &None, &model, chars).is_err());
+    }
+
+    #[test]
+    fn finalize_does_not_insert_a_learned_piece_when_the_budget_is_full() {
+        let model =
+            Unigram::from(vec![("a".into(), -2.0), ("aa".into(), -1.0)], None, false).unwrap();
+        let chars = AHashSet::from(["a".to_owned()]);
+        let out = finalize(116, &[], &None, &model, chars).unwrap();
+        assert_eq!(out.len(), 116);
+        assert!(out.token_to_id("aa").is_none());
     }
 
     #[test]

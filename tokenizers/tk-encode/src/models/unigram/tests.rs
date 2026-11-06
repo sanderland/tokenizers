@@ -475,3 +475,23 @@ fn test_min_tokens_matches_brute_force() {
         );
     }
 }
+#[test]
+fn min_tokens_prices_byte_fallback_before_selecting_a_path() {
+    use super::Objective;
+    // [abc, emoji fallback, def] is three lattice nodes but six tokens.
+    // [a, b, c😀d, e, f] is five actual tokens and is therefore cheaper.
+    let pieces = [
+        "a", "b", "c", "d", "e", "f", "abc", "def", "c😀d", "<0xF0>", "<0x9F>", "<0x98>", "<0x80>",
+    ]
+    .into_iter()
+    .map(|s| (s.to_string(), 0.0))
+    .collect();
+    let model = Unigram::from(pieces, None, true)
+        .unwrap()
+        .with_objective(Objective::MinTokens);
+    let tokens = model.tokenize("abc😀def").unwrap();
+    assert_eq!(
+        tokens.iter().map(|t| t.value.as_str()).collect::<Vec<_>>(),
+        ["a", "b", "c😀d", "e", "f"]
+    );
+}

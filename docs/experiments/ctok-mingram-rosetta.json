@@ -1,0 +1,82 @@
+{
+  "source": "ctok/tests/fixtures/rosetta.jsonl.gz",
+  "source_sha256": "7502a15923c4c9dddad31ecf844bdd1ccdeaf53cccea2a09c71771a8b5faba38",
+  "holdout_source": "ctok/tests/fixtures/rosetta_holdout.jsonl.gz",
+  "holdout_sha256": "6d64fc9ee52243ca0e438d5841b82f15f3bfc65df4d51019f8615459fecb7e65",
+  "split": "1741 training documents and the separate 250-document holdout; verified disjoint IDs.",
+  "vocab_size": 4096,
+  "pretokenizer": "NFC + GPT4O regex + UTF-8 character boundaries",
+  "caveats": [
+    "These are local fixture corpora, not the paper's FineWeb/Goldfish corpora or results.",
+    "Rust seeds on characters; script_tok learns UTF-8 prefixes and characters from byte atoms.",
+    "Reserved alphabets differ, and Rust limits pieces to 16 characters; vocabulary caps match, actual returned sizes are recorded.",
+    "Reference MinGram is saved and loaded before evaluation, as its loader floors unused atomic scores.",
+    "Rust timings use a debug build, include subprocess overhead, and are not a speed benchmark."
+  ],
+  "results": [
+    {
+      "language": "rosetta",
+      "train_sequences": 1741,
+      "test_sequences": 250,
+      "train_utf8_bytes": 1344598,
+      "test_utf8_bytes": 200583,
+      "reference_bpe": {
+        "size": 4096,
+        "test_tokens": 79722,
+        "seconds": 1.9643794589937897
+      },
+      "rust_required_characters": 320,
+      "rust_fallback_pieces": 159,
+      "variants": [
+        {
+          "factor": 1.1,
+          "reference": {
+            "size": 4096,
+            "test_tokens": 79045,
+            "freshly_trained_test_tokens": 79046,
+            "delta_vs_bpe_pct": -0.8492009733825023,
+            "seconds": 5.327836666998337
+          },
+          "rust": {
+            "size": 4096,
+            "test_tokens": 79542,
+            "delta_vs_reference_bpe_pct": -0.22578460149017543,
+            "seconds": 1.1187444999959553
+          }
+        },
+        {
+          "factor": 1.15,
+          "reference": {
+            "size": 4096,
+            "test_tokens": 79220,
+            "freshly_trained_test_tokens": 79221,
+            "delta_vs_bpe_pct": -0.6296881663781617,
+            "seconds": 5.36448637500871
+          },
+          "rust": {
+            "size": 4096,
+            "test_tokens": 79594,
+            "delta_vs_reference_bpe_pct": -0.16055793883745784,
+            "seconds": 1.1325715410057455
+          }
+        },
+        {
+          "factor": 2.0,
+          "reference": {
+            "size": 4096,
+            "test_tokens": 79669,
+            "freshly_trained_test_tokens": 79670,
+            "delta_vs_bpe_pct": -0.06648102154989122,
+            "seconds": 5.584063916990999
+          },
+          "rust": {
+            "size": 4096,
+            "test_tokens": 80014,
+            "delta_vs_reference_bpe_pct": 0.3662727979729663,
+            "seconds": 1.3277772500005085
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -221,6 +221,7 @@ pub(super) fn ulp_distance(a: f64, b: f64) -> u64 {
     (a.to_bits() as i64 - b.to_bits() as i64).unsigned_abs()
 }
 
+#[cfg(any(feature = "unigram", test))]
 /// A float spelled so that *this crate's own parser* reads it back to the identical bits.
 ///
 /// The usual "shortest form that round-trips" rule is defined against a correctly-rounded parser,
@@ -259,6 +260,7 @@ pub(super) fn float_literal(value: f64) -> Result<String> {
     Ok(spelling)
 }
 
+#[cfg(any(feature = "unigram", test))]
 /// Keep whichever of the incumbent spelling and `candidate` reads back closer
 /// to `value` through our own parser.
 fn consider(value: f64, best: (u64, String), candidate: String) -> (u64, String) {
